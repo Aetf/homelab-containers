@@ -34,7 +34,8 @@ deploy: build
         echo 'Step 5: Starting machine...'; \
         machinectl start {{machine}} \
     "
-    scp caddy.nspawn gw:/etc/systemd/nspawn/
+    scp caddy.nspawn {{host}}:/etc/systemd/nspawn/
+    ssh {{host}} chown 600 /etc/systemd/nspawn/caddy.nspawn
     @echo "Deployment successful!"
 
 # Clean up local artifacts
