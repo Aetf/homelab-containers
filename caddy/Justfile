@@ -1,0 +1,42 @@
+# Variables (Override these via command line: just deploy host=root@1.2.3.4)
+host := "gw"
+machine := "caddy"
+remote_base := "/data/custom/machines"
+local_tar := "build/rootfs.tar"
+
+# Default to building the image
+default: build
+
+# 1. Build the local rootfs tarball
+build:
+    @echo "Building rootfs for {{machine}}..."
+    podman build --arch aarch64 -q --output type=tar,dest={{local_tar}} .
+    @echo "Build complete: {{local_tar}}"
+
+# 2. Deploy to remote (Depends on 'build')
+# This streams the tarball via SSH and handles the stop/wipe/start logic
+deploy: build
+    @echo "Deploying to {{host}}..."
+    cat {{local_tar}} | ssh {{host}} " \
+        echo 'Step 1: Stopping existing machine...'; \
+        machinectl terminate {{machine}} 2>/dev/null || true; \
+        \
+        echo 'Step 2: Cleaning old directory...'; \
+        rm -rf {{remote_base}}/{{machine}}; \
+        \
+        echo 'Step 3: Extracting new filesystem...'; \
+        mkdir -p {{remote_base}}/{{machine}} && \
+        tar -x -C {{remote_base}}/{{machine}} && \
+        \
+        echo 'Step 4: Linking to /var/lib/machines...'; \
+        ln -sfn {{remote_base}}/{{machine}} /var/lib/machines/{{machine}} && \
+        \
+        echo 'Step 5: Starting machine...'; \
+        machinectl start {{machine}} \
+    "
+    scp caddy.nspawn gw:/etc/systemd/nspawn/
+    @echo "Deployment successful!"
+
+# Clean up local artifacts
+clean:
+    rm -f {{local_tar}}
