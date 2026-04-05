@@ -54,3 +54,6 @@ services:
       # This allows the container to persist data, such as network
       # configuration, even when the container is stopped or restarted.
       - "/var/lib/otbr:/data"
+    logging:
+      options:
+        path: /var/log/otbr.log
