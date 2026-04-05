@@ -23,7 +23,7 @@ services:
   otbr:
     <<: *default-service
     # Use the locally built ARMv6 image as requested.
-    image: otbr-armv6
+    image: otbr-armv6:${OTBR_TAG:-latest}
     # The container name for easy identification.
     container_name: otbr
     # For some reason, NET_ADMIN is not enough for ip

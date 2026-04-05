@@ -1,9 +1,12 @@
-FROM docker.io/alpine:3.22.1 AS builder
+FROM docker.io/alpine:3.23.0 AS builder
 
 ARG GITHUB_REPO="openthread/ot-br-posix"
 ARG GIT_COMMIT="refs/heads/main"
 
-ENV S6_OVERLAY_VERSION=3.2.1.0
+LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPO}"
+LABEL org.opencontainers.image.revision="${GIT_COMMIT}"
+
+ENV S6_OVERLAY_VERSION=3.2.2.0
 WORKDIR /work
 
 RUN apk add build-base pkgconfig \
@@ -54,6 +57,10 @@ RUN PLATFORM_SPEC="${TARGETARCH}${TARGETVARIANT:+/$TARGETVARIANT}" \
         | tar Jxvf - -C install/
 
 FROM docker.io/alpine:3.22.1
+
+ARG GIT_COMMIT
+LABEL org.opencontainers.image.revision="${GIT_COMMIT}"
+ENV OTBR_COMMIT=${GIT_COMMIT}
 
 RUN apk add bash uutils-coreutils ipset iptables \
     && apk add libprotobuf avahi-libs jsoncpp libedit
