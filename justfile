@@ -1,7 +1,8 @@
 GITHUB_REPO := "openthread/ot-br-posix"
 GIT_BRANCH := "main"
+
 # Fetch the latest commit hash for the specified branch
-GIT_COMMIT := `git ls-remote https://github.com/{{GITHUB_REPO}}.git refs/heads/{{GIT_BRANCH}} | cut -f1`
+GIT_COMMIT := shell(f"git ls-remote https://github.com/{{GITHUB_REPO}}.git refs/heads/{{GIT_BRANCH}} | cut -f1")
 
 deploy:
     sudo podman build \

@@ -13,7 +13,7 @@ RUN apk add build-base pkgconfig \
     && apk add curl wget ca-certificates \
     && apk add cmake git samurai \
     && apk add npm \
-    && apk add protobuf-dev jsoncpp-dev avahi-dev
+    && apk add protobuf-dev jsoncpp-dev avahi-dev cjson-dev
 
 RUN git clone \
         --depth 1 \
