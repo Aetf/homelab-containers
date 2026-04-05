@@ -63,7 +63,7 @@ LABEL org.opencontainers.image.revision="${GIT_COMMIT}"
 ENV OTBR_COMMIT=${GIT_COMMIT}
 
 RUN apk add bash uutils-coreutils ipset iptables \
-    && apk add libprotobuf avahi-libs jsoncpp libedit
+    && apk add libprotobuf avahi-libs jsoncpp libedit cjson
 
 COPY --from=builder /work/install/ /
 
