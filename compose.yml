@@ -15,10 +15,6 @@ x-common-labels:
     restart: always
     env_file:
     - otbr.env
-    logging:
-      driver: k8s-file
-      options:
-        max-size: 10mb
 services:
   otbr:
     <<: *default-service
