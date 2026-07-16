@@ -13,7 +13,7 @@ RUN apk add build-base pkgconfig \
     && apk add curl wget ca-certificates \
     && apk add cmake git samurai \
     && apk add npm \
-    && apk add protobuf-dev jsoncpp-dev avahi-dev cjson-dev
+    && apk add protobuf-dev jsoncpp-dev cjson-dev
 
 RUN git clone \
         --depth 1 \
@@ -26,10 +26,10 @@ RUN cmake -Bbuild -Ssrc \
         -GNinja \
         -Wno-dev \
         -DCMAKE_INSTALL_PREFIX=/usr \
-        -DCMAKE_CXX_FLAGS="-Wno-psabi" \
+        -DCMAKE_CXX_FLAGS="-Wno-psabi -DOPENTHREAD_CONFIG_MLE_DEFAULT_LEADER_WEIGHT_ADJUSTMENT=8" \
         -DBUILD_TESTING=OFF \
         -DOTBR_DBUS=OFF \
-        -DOTBR_MDNS=avahi \
+        -DOTBR_MDNS=openthread \
         -DOTBR_REST=ON \
         -DOTBR_WEB=ON \
         -DOT_POSIX_NAT64_CIDR="192.168.255.0/24" \
@@ -63,7 +63,7 @@ LABEL org.opencontainers.image.revision="${GIT_COMMIT}"
 ENV OTBR_COMMIT=${GIT_COMMIT}
 
 RUN apk add bash uutils-coreutils ipset iptables \
-    && apk add libprotobuf avahi-libs jsoncpp libedit cjson
+    && apk add libprotobuf jsoncpp libedit cjson
 
 COPY --from=builder /work/install/ /
 
