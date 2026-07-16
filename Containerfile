@@ -37,7 +37,13 @@ RUN cmake -Bbuild -Ssrc \
     && cmake --build build \
     && DESTDIR=install cmake --install build
 
-RUN cp -r src/etc/docker/border-router/rootfs/* install
+# Upstream rootfs assumes the mDNSResponder backend and unconditionally
+# ships an s6 service exec'ing /usr/sbin/mdnsd; with OTBR_MDNS=openthread
+# there is no mdnsd binary and the service crash-loops, flooding the log.
+RUN cp -r src/etc/docker/border-router/rootfs/* install \
+    && rm -rf install/etc/s6-overlay/s6-rc.d/mdns \
+              install/etc/s6-overlay/s6-rc.d/user/contents.d/mdns \
+              install/etc/s6-overlay/s6-rc.d/otbr-agent/dependencies.d/mdns
 
 # Prepare S6 overlay source
 ARG TARGETARCH
