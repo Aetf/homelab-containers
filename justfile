@@ -13,3 +13,4 @@ deploy:
         --file Containerfile
     sudo podman image scp otbr-armv6:{{GIT_COMMIT}} rpi::
     sudo podman image scp otbr-armv6:latest rpi::
+    scp compose.yml otbr.env rpi:/root/otbr/
