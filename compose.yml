@@ -1,7 +1,8 @@
 # Podman Compose specification for OpenThread Border Router (OTBR)
 #
-# This configuration is based on the official OpenThread guide and includes
-# modifications for a custom-built image and host DBus integration for Avahi.
+# This configuration is based on the official OpenThread guide, using a
+# custom-built image. mDNS is handled by OpenThread's native responder
+# (OTBR_MDNS=openthread), so no host Avahi/DBus integration is needed.
 #
 # To run:
 #   podman-compose up -d
@@ -47,13 +48,18 @@ services:
       # used by OTBR.
       - "/dev/net/tun:/dev/net/tun"
     volumes:
-      # Mount the host's DBus socket. This is required for the OTBR service
-      # to communicate with the host's Avahi daemon for mDNS discovery.
-      - "/var/run/dbus:/var/run/dbus"
       # Mounts the host directory /var/lib/otbr into the container at /data.
       # This allows the container to persist data, such as network
       # configuration, even when the container is stopped or restarted.
       - "/var/lib/otbr:/data"
+      # otbr-agent logs to syslog; hand it the host socket so everything
+      # lands in the homelab remote log sink (rpi itself keeps no logs)
+      - "/dev/log:/dev/log"
     logging:
+      # k8s-file on /run (tmpfs): zero SD-card writes, survives container
+      # crashes for forensics (lost only on host reboot). Runtime logs go
+      # to the homelab via otbr-agent -> /dev/log -> busybox syslogd -R.
+      driver: k8s-file
       options:
-        path: /var/log/otbr.log
+        path: /run/otbr-container.log
+        max-size: 2mb
