@@ -13,9 +13,10 @@ deploy:
         -t otbr-armv6:latest \
         --platform linux/arm/v6 \
         --file Containerfile
-    # Transfer once; image scp sends the full archive per invocation (no
-    # layer dedup), so `latest` is re-pointed on the remote side instead.
-    podman image scp otbr-armv6:"${GIT_COMMIT}" rpi::
+    # Transfer once and re-point `latest` on the remote side. save|load
+    # instead of image scp: podman's builtin ssh client doesn't read
+    # ~/.ssh/config, so the `rpi` alias doesn't resolve for it.
+    podman save otbr-armv6:"${GIT_COMMIT}" | ssh rpi podman load
     ssh rpi podman tag otbr-armv6:"${GIT_COMMIT}" otbr-armv6:latest
     scp compose.yml otbr.env rpi:/root/otbr/
     echo "OTBR_TAG=${GIT_COMMIT}" | ssh rpi 'cat > /root/otbr/.env'
