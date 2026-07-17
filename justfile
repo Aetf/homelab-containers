@@ -5,12 +5,12 @@ GIT_BRANCH := "main"
 GIT_COMMIT := shell(f"git ls-remote https://github.com/{{GITHUB_REPO}}.git refs/heads/{{GIT_BRANCH}} | cut -f1")
 
 deploy:
-    sudo podman build \
+    podman build \
         --build-arg GIT_COMMIT={{GIT_COMMIT}} \
         -t otbr-armv6:{{GIT_COMMIT}} \
         -t otbr-armv6:latest \
         --platform linux/arm/v6 \
         --file Containerfile
-    sudo podman image scp otbr-armv6:{{GIT_COMMIT}} rpi::
-    sudo podman image scp otbr-armv6:latest rpi::
+    podman image scp otbr-armv6:{{GIT_COMMIT}} rpi::
+    podman image scp otbr-armv6:latest rpi::
     scp compose.yml otbr.env rpi:/root/otbr/
