@@ -5,9 +5,6 @@ FROM docker.io/alpine:${ALPINE_VERSION} AS builder
 ARG GITHUB_REPO="openthread/ot-br-posix"
 ARG GIT_COMMIT="refs/heads/main"
 
-LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPO}"
-LABEL org.opencontainers.image.revision="${GIT_COMMIT}"
-
 ENV S6_OVERLAY_VERSION=3.2.2.0
 WORKDIR /work
 
@@ -66,7 +63,9 @@ RUN PLATFORM_SPEC="${TARGETARCH}${TARGETVARIANT:+/$TARGETVARIANT}" \
 
 FROM docker.io/alpine:${ALPINE_VERSION}
 
+ARG GITHUB_REPO="openthread/ot-br-posix"
 ARG GIT_COMMIT
+LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPO}"
 LABEL org.opencontainers.image.revision="${GIT_COMMIT}"
 ENV OTBR_COMMIT=${GIT_COMMIT}
 
