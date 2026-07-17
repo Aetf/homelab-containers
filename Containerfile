@@ -4,15 +4,15 @@ FROM docker.io/alpine:${ALPINE_VERSION} AS builder
 
 ARG GITHUB_REPO="openthread/ot-br-posix"
 ARG GIT_COMMIT="refs/heads/main"
+ARG S6_OVERLAY_VERSION=3.2.2.0
 
-ENV S6_OVERLAY_VERSION=3.2.2.0
 WORKDIR /work
 
-RUN apk add build-base pkgconfig \
-    && apk add curl wget ca-certificates \
-    && apk add cmake git samurai \
-    && apk add npm \
-    && apk add protobuf-dev jsoncpp-dev cjson-dev
+RUN apk add build-base pkgconfig ccache \
+        curl wget ca-certificates \
+        cmake git samurai \
+        npm \
+        protobuf-dev jsoncpp-dev cjson-dev
 
 RUN git clone \
         --depth 1 \
@@ -21,10 +21,16 @@ RUN git clone \
         https://github.com/"${GITHUB_REPO}".git \
         src
 
-RUN cmake -Bbuild -Ssrc \
+# Cache mounts are container paths, persisted in the host user's container
+# storage across builds; they make emulated rebuilds mostly incremental.
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    --mount=type=cache,target=/root/.npm \
+    cmake -Bbuild -Ssrc \
         -GNinja \
         -Wno-dev \
         -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_CXX_FLAGS="-Wno-psabi -DOPENTHREAD_CONFIG_MLE_DEFAULT_LEADER_WEIGHT_ADJUSTMENT=8" \
         -DBUILD_TESTING=OFF \
         -DOTBR_DBUS=OFF \
@@ -56,10 +62,10 @@ RUN PLATFORM_SPEC="${TARGETARCH}${TARGETVARIANT:+/$TARGETVARIANT}" \
          "arm64") S6_ARCH="aarch64" ;; \
          *) echo "Unsupported architecture: ${PLATFORM_SPEC}"; exit 1 ;; \
        esac \
-    && curl -L -f -s "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz" \
-        | tar Jxvf - -C install/ \
-    && curl -L -f -s "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz" \
-        | tar Jxvf - -C install/
+    && curl -L -f -s --retry 3 "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz" \
+        | tar Jxf - -C install/ \
+    && curl -L -f -s --retry 3 "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz" \
+        | tar Jxf - -C install/
 
 FROM docker.io/alpine:${ALPINE_VERSION}
 
