@@ -10,16 +10,16 @@
 # To stop:
 #   podman-compose down
 
-version: "3.8"
-x-common-labels:
-  default-service: &default-service
-    restart: always
-    env_file:
+x-service-defaults: &service-defaults
+  restart: always
+  env_file:
     - otbr.env
+
 services:
   otbr:
-    <<: *default-service
-    # Use the locally built ARMv6 image as requested.
+    <<: *service-defaults
+    # Locally built ARMv6 image; the tag is pinned to the deployed commit
+    # via OTBR_TAG in .env, written by `just deploy`.
     image: otbr-armv6:${OTBR_TAG:-latest}
     # The container name for easy identification.
     container_name: otbr
@@ -39,9 +39,8 @@ services:
     #   net.ipv6.conf.all.forwarding: 1
     #   net.ipv6.ip_forward: 1
     devices:
-      # Maps the host's /dev/ttyACM0 device into the container. This is
-      # typically the serial port connected to the Thread Radio Co-Processor
-      # (RCP).
+      # Maps the host's /dev/ttyUSB0 device into the container. This is
+      # the serial port connected to the Thread Radio Co-Processor (RCP).
       - "/dev/ttyUSB0:/dev/ttyUSB0"
       # Maps the host's /dev/net/tun device into the container. This is
       # necessary for creating and using virtual network interfaces, which are
