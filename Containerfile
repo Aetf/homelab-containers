@@ -1,4 +1,6 @@
-FROM docker.io/alpine:3.23.0 AS builder
+ARG ALPINE_VERSION=3.23.0
+
+FROM docker.io/alpine:${ALPINE_VERSION} AS builder
 
 ARG GITHUB_REPO="openthread/ot-br-posix"
 ARG GIT_COMMIT="refs/heads/main"
@@ -62,7 +64,7 @@ RUN PLATFORM_SPEC="${TARGETARCH}${TARGETVARIANT:+/$TARGETVARIANT}" \
     && curl -L -f -s "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz" \
         | tar Jxvf - -C install/
 
-FROM docker.io/alpine:3.22.1
+FROM docker.io/alpine:${ALPINE_VERSION}
 
 ARG GIT_COMMIT
 LABEL org.opencontainers.image.revision="${GIT_COMMIT}"
