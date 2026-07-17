@@ -54,6 +54,14 @@ services:
       # otbr-agent logs to syslog; hand it the host socket so everything
       # lands in the homelab remote log sink (rpi itself keeps no logs)
       - "/dev/log:/dev/log"
+    healthcheck:
+      # otbr-agent REST API (default port 8081); host networking, so
+      # localhost reaches it directly. wget is busybox from the base image.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/node"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     logging:
       # k8s-file on /run (tmpfs): zero SD-card writes, survives container
       # crashes for forensics (lost only on host reboot). Runtime logs go
