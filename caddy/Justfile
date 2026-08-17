@@ -49,14 +49,14 @@ deploy: build
         rm -rf {{remote_base}}/{{machine}}.new/data && \
         \
         echo 'Step 3: Swapping (old kept as {{machine}}.old)...' && \
-        { machinectl terminate {{machine}} 2>/dev/null || true; } && \
+        systemctl stop systemd-nspawn@{{machine}}.service && \
         rm -rf {{remote_base}}/{{machine}}.old && \
         { mv {{remote_base}}/{{machine}} {{remote_base}}/{{machine}}.old 2>/dev/null || true; } && \
         mv {{remote_base}}/{{machine}}.new {{remote_base}}/{{machine}} && \
         ln -sfn {{remote_base}}/{{machine}} /var/lib/machines/{{machine}} && \
         \
         echo 'Step 4: Starting machine...' && \
-        machinectl start {{machine}} \
+        systemctl start systemd-nspawn@{{machine}}.service \
     "
     @echo "Deployed. Rollback: ssh {{host}}, terminate {{machine}}, swap {{machine}}.old back, start."
 
