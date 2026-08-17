@@ -23,30 +23,42 @@ build:
     @echo "Build complete: {{local_tar}}"
 
 # 2. Deploy to remote (Depends on 'build')
-# This streams the tarball via SSH and handles the stop/wipe/start logic.
+# Validate-then-swap: extract to {{machine}}.new, run `caddy validate` against
+# the live Caddyfile+token (copied into the chroot) with the NEW binary, and
+# only then swap. The previous rootfs is kept at {{machine}}.old — rollback is
+# terminate / swap directories back / start. A validation failure aborts with
+# the old container still running untouched.
 # The caddy.nspawn unit is NOT deployed from here: it is owned by
 # ~/.config/gw-config (deployed by its deploy.sh, mirrored to /data for
 # firmware-update recovery).
 deploy: build
     @echo "Deploying to {{host}}..."
     cat {{local_tar}} | ssh {{host}} " \
-        echo 'Step 1: Stopping existing machine...'; \
-        machinectl terminate {{machine}} 2>/dev/null || true; \
+        echo 'Step 1: Extracting new filesystem...' && \
+        rm -rf {{remote_base}}/{{machine}}.new && \
+        mkdir -p {{remote_base}}/{{machine}}.new && \
+        tar -x -C {{remote_base}}/{{machine}}.new && \
         \
-        echo 'Step 2: Cleaning old directory...'; \
-        rm -rf {{remote_base}}/{{machine}}; \
+        echo 'Step 2: Validating live Caddyfile with the new binary...' && \
+        mkdir -p {{remote_base}}/{{machine}}.new/data/caddy/secrets \
+                 {{remote_base}}/{{machine}}.new/data/caddy/config/caddy && \
+        cp /data/caddy/secrets/cf_token {{remote_base}}/{{machine}}.new/data/caddy/secrets/ && \
+        cp /data/caddy/config/caddy/Caddyfile {{remote_base}}/{{machine}}.new/data/caddy/config/caddy/ && \
+        chroot {{remote_base}}/{{machine}}.new /usr/bin/caddy validate \
+            --config /data/caddy/config/caddy/Caddyfile --adapter caddyfile && \
+        rm -rf {{remote_base}}/{{machine}}.new/data && \
         \
-        echo 'Step 3: Extracting new filesystem...'; \
-        mkdir -p {{remote_base}}/{{machine}} && \
-        tar -x -C {{remote_base}}/{{machine}} && \
-        \
-        echo 'Step 4: Linking to /var/lib/machines...'; \
+        echo 'Step 3: Swapping (old kept as {{machine}}.old)...' && \
+        { machinectl terminate {{machine}} 2>/dev/null || true; } && \
+        rm -rf {{remote_base}}/{{machine}}.old && \
+        { mv {{remote_base}}/{{machine}} {{remote_base}}/{{machine}}.old 2>/dev/null || true; } && \
+        mv {{remote_base}}/{{machine}}.new {{remote_base}}/{{machine}} && \
         ln -sfn {{remote_base}}/{{machine}} /var/lib/machines/{{machine}} && \
         \
-        echo 'Step 5: Starting machine...'; \
+        echo 'Step 4: Starting machine...' && \
         machinectl start {{machine}} \
     "
-    @echo "Deployment successful!"
+    @echo "Deployed. Rollback: ssh {{host}}, terminate {{machine}}, swap {{machine}}.old back, start."
 
 # Clean up local artifacts
 clean:
