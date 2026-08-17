@@ -51,6 +51,14 @@ NO SECRETS in this repo — images and git history are meant to be shareable.
 (A CF API token used to live in a `caddy.nspawn` here; removed 2026-08-17,
 rotate + scrub history before ever publishing this repo.)
 
+## Known limitations
+
+- `podman build --output type=tar` drops xattrs, including file capabilities
+  (verified 2026-08-17: xcaddy's `setcap cap_net_bind_service` on the caddy
+  binary is absent from the tar). Harmless while services run as root inside
+  the containers; revisit before any target relies on file caps for non-root
+  low-port binding.
+
 ## TODO
 
 - caddy: ssh host keys are baked at build (`ssh-keygen -A`) so they rotate on

@@ -1,6 +1,7 @@
 ARG ALPINE_VERSION=3.23.0
 
-FROM docker.io/caddy:2.10.2-builder-alpine AS builder
+# caddy-l4 v0.1.2 requires caddy >= 2.11.4
+FROM docker.io/caddy:2.11.4-builder-alpine AS builder
 
 RUN xcaddy build \
   --with github.com/caddy-dns/cloudflare \
