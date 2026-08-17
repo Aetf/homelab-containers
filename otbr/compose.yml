@@ -1,0 +1,72 @@
+# Podman Compose specification for OpenThread Border Router (OTBR)
+#
+# This configuration is based on the official OpenThread guide, using a
+# custom-built image. mDNS is handled by OpenThread's native responder
+# (OTBR_MDNS=openthread), so no host Avahi/DBus integration is needed.
+#
+# To run:
+#   podman-compose up -d
+#
+# To stop:
+#   podman-compose down
+
+x-service-defaults: &service-defaults
+  restart: always
+  env_file:
+    - otbr.env
+
+services:
+  otbr:
+    <<: *service-defaults
+    # Locally built ARMv6 image; the tag is pinned to the deployed commit
+    # via OTBR_TAG in .env, written by `just deploy`.
+    image: otbr-armv6:${OTBR_TAG:-latest}
+    # The container name for easy identification.
+    container_name: otbr
+    # For some reason, NET_ADMIN is not enough for ip
+    # Use the host's network stack. This is required for the OTBR to
+    # manage network interfaces and routing correctly.
+    network_mode: "host"
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - NET_BROADCAST
+    # Set required kernel parameters for IPv6 and forwarding.
+    # This is not compatible with host networking.
+    # sysctls:
+    #   net.ipv6.conf.eth0.accept_ra: 2
+    #   net.ipv6.conf.eth0.accept_ra_rt_info_max_plen: 64
+    #   net.ipv6.conf.all.forwarding: 1
+    #   net.ipv6.ip_forward: 1
+    devices:
+      # Maps the host's /dev/ttyUSB0 device into the container. This is
+      # the serial port connected to the Thread Radio Co-Processor (RCP).
+      - "/dev/ttyUSB0:/dev/ttyUSB0"
+      # Maps the host's /dev/net/tun device into the container. This is
+      # necessary for creating and using virtual network interfaces, which are
+      # used by OTBR.
+      - "/dev/net/tun:/dev/net/tun"
+    volumes:
+      # Mounts the host directory /var/lib/otbr into the container at /data.
+      # This allows the container to persist data, such as network
+      # configuration, even when the container is stopped or restarted.
+      - "/var/lib/otbr:/data"
+      # otbr-agent logs to syslog; hand it the host socket so everything
+      # lands in the homelab remote log sink (rpi itself keeps no logs)
+      - "/dev/log:/dev/log"
+    healthcheck:
+      # otbr-agent REST API (default port 8081); host networking, so
+      # localhost reaches it directly. wget is busybox from the base image.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/node"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      # k8s-file on /run (tmpfs): zero SD-card writes, survives container
+      # crashes for forensics (lost only on host reboot). Runtime logs go
+      # to the homelab via otbr-agent -> /dev/log -> busybox syslogd -R.
+      driver: k8s-file
+      options:
+        path: /run/otbr-container.log
+        max-size: 2mb
