@@ -1,31 +1,21 @@
+ARG ALPINE_VERSION=3.23.0
+
 FROM docker.io/caddy:2.10.2-builder-alpine AS builder
 
 RUN xcaddy build \
   --with github.com/caddy-dns/cloudflare \
   --with github.com/mholt/caddy-l4
 
-# Prepare S6 overlay source
 RUN apk add curl ca-certificates
 
-ENV S6_OVERLAY_VERSION=3.2.1.0
+# s6-overlay via the shared installer (build with --build-context shared=../shared)
+ARG S6_OVERLAY_VERSION=3.2.2.0
 ARG TARGETARCH
 ARG TARGETVARIANT
+RUN --mount=type=bind,from=shared,target=/shared \
+    sh /shared/install-s6.sh /install
 
-RUN mkdir /install
-RUN PLATFORM_SPEC="${TARGETARCH}${TARGETVARIANT:+/$TARGETVARIANT}" \
-    && case "${PLATFORM_SPEC}" in \
-         "amd64") S6_ARCH="x86_64" ;; \
-         "arm/v7") S6_ARCH="arm" ;; \
-         "arm/v6") S6_ARCH="armhf" ;; \
-         "arm64") S6_ARCH="aarch64" ;; \
-         *) echo "Unsupported architecture: ${PLATFORM_SPEC}"; exit 1 ;; \
-       esac \
-    && curl -L -f -s "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz" \
-        | tar Jxvf - -C /install \
-    && curl -L -f -s "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz" \
-        | tar Jxvf - -C /install
-
-FROM docker.io/alpine:3.23.0
+FROM docker.io/alpine:${ALPINE_VERSION}
 
 RUN apk add --no-cache ifupdown-ng socat openssh
 

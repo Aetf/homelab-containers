@@ -50,22 +50,12 @@ RUN cp -r src/etc/docker/border-router/rootfs/* install \
               install/etc/s6-overlay/s6-rc.d/user/contents.d/mdns \
               install/etc/s6-overlay/s6-rc.d/otbr-agent/dependencies.d/mdns
 
-# Prepare S6 overlay source
+# s6-overlay via the shared installer (build with --build-context shared=../shared)
 ARG TARGETARCH
 ARG TARGETVARIANT
 
-RUN PLATFORM_SPEC="${TARGETARCH}${TARGETVARIANT:+/$TARGETVARIANT}" \
-    && case "${PLATFORM_SPEC}" in \
-         "amd64") S6_ARCH="x86_64" ;; \
-         "arm/v7") S6_ARCH="arm" ;; \
-         "arm/v6") S6_ARCH="armhf" ;; \
-         "arm64") S6_ARCH="aarch64" ;; \
-         *) echo "Unsupported architecture: ${PLATFORM_SPEC}"; exit 1 ;; \
-       esac \
-    && curl -L -f -s --retry 3 "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz" \
-        | tar Jxf - -C install/ \
-    && curl -L -f -s --retry 3 "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz" \
-        | tar Jxf - -C install/
+RUN --mount=type=bind,from=shared,target=/shared \
+    sh /shared/install-s6.sh install/
 
 FROM docker.io/alpine:${ALPINE_VERSION}
 

@@ -1,0 +1,40 @@
+GITHUB_REPO := "openthread/ot-br-posix"
+GIT_BRANCH := "main"
+# Canonical value lives in ../versions.env, exported by the top-level Justfile;
+# the default here only serves direct standalone invocation.
+s6_version := env_var_or_default("S6_OVERLAY_VERSION", "3.2.2.0")
+
+# Shared podman build invocation; `commit` is a resolved ot-br-posix commit sha.
+_build commit:
+    podman build \
+        --build-arg GIT_COMMIT="{{commit}}" \
+        --build-arg S6_OVERLAY_VERSION={{s6_version}} \
+        --build-context shared=../shared \
+        -t otbr-armv6:"{{commit}}" \
+        -t otbr-armv6:latest \
+        --platform linux/arm/v6 \
+        --file Containerfile .
+
+# Build against current upstream HEAD without deploying
+build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Resolved here instead of a top-level shell() so `just --list`
+    # doesn't hit the network.
+    GIT_COMMIT=$(git ls-remote https://github.com/{{GITHUB_REPO}}.git refs/heads/{{GIT_BRANCH}} | cut -f1)
+    just _build "${GIT_COMMIT}"
+
+deploy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    GIT_COMMIT=$(git ls-remote https://github.com/{{GITHUB_REPO}}.git refs/heads/{{GIT_BRANCH}} | cut -f1)
+    just _build "${GIT_COMMIT}"
+    # Transfer once and re-point `latest` on the remote side. save|load
+    # instead of image scp: podman's builtin ssh client doesn't read
+    # ~/.ssh/config, so the `rpi` alias doesn't resolve for it.
+    podman save otbr-armv6:"${GIT_COMMIT}" | ssh rpi podman load
+    ssh rpi podman tag otbr-armv6:"${GIT_COMMIT}" otbr-armv6:latest
+    scp compose.yml otbr.env rpi:/root/otbr/
+    echo "OTBR_TAG=${GIT_COMMIT}" | ssh rpi 'cat > /root/otbr/.env'
+    ssh rpi 'cd /root/otbr && podman-compose up -d'
+    ssh rpi podman image prune -f
