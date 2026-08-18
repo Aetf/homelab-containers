@@ -14,7 +14,7 @@ RUN --mount=type=bind,from=shared,target=/shared \
 
 # AdGuardHome official static binary (Go, works on musl; no apk package exists)
 # renovate: datasource=github-releases depName=AdguardTeam/AdGuardHome
-ARG ADGUARD_VERSION=v0.107.78
+ARG ADGUARD_VERSION=v0.107.79
 RUN case "${TARGETARCH}${TARGETVARIANT:+/$TARGETVARIANT}" in \
       "amd64")  AGH_ARCH="amd64" ;; \
       "arm64")  AGH_ARCH="arm64" ;; \
