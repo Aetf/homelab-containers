@@ -12,7 +12,7 @@ s6_version := env_var_or_default("S6_OVERLAY_VERSION", "3.2.2.0")
 # AdGuardHome release pin (target-specific, not in versions.env). Upgrade =
 # bump, `just deploy adguard` — replaces the in-place web-UI updater flow.
 # renovate: datasource=github-releases depName=AdguardTeam/AdGuardHome
-adguard_version := "v0.107.78"
+adguard_version := "v0.107.79"
 
 # Default to building the image
 default: build
