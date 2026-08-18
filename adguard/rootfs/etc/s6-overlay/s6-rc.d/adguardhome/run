@@ -2,4 +2,9 @@
 
 # State (config + querylog/stats data) lives in /data/adguard, bind-mounted
 # from the host; the rootfs is a disposable image artifact.
-exec /opt/AdGuardHome/AdGuardHome -c /data/adguard/AdGuardHome.yaml -w /data/adguard
+#
+# --no-check-update: the version is pinned by this image (renovate-managed).
+# The in-app updater would write a new binary into the disposable rootfs,
+# silently reverted at the next swap; the update check also feeds an HA
+# update entity whose install button must not be used anymore.
+exec /opt/AdGuardHome/AdGuardHome --no-check-update -c /data/adguard/AdGuardHome.yaml -w /data/adguard
