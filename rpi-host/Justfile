@@ -12,6 +12,7 @@
 # inactive slot over ssh, flips cmdline.txt, reboots, health-checks, and
 # reinstalls the otbr image (see deploy.sh).
 
+# renovate: datasource=docker depName=alpine
 alpine_version := env_var_or_default("ALPINE_VERSION", "3.23.0")
 
 default: build

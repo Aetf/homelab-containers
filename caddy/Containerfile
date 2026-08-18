@@ -10,6 +10,7 @@ RUN xcaddy build \
 RUN apk add curl ca-certificates
 
 # s6-overlay via the shared installer (build with --build-context shared=../shared)
+# renovate: datasource=github-releases depName=just-containers/s6-overlay extractVersion=^v(?<version>.+)$
 ARG S6_OVERLAY_VERSION=3.2.2.0
 ARG TARGETARCH
 ARG TARGETVARIANT

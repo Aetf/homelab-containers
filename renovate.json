@@ -1,0 +1,28 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "labels": ["renovate"],
+  "customManagers": [
+    {
+      "description": "Pins annotated with a `# renovate: ...` comment on the line above. Form 1: KEY=value (versions.env), ARG KEY=value (Containerfile), key := \"value\" (Justfile). The value must look like a version (v?digit...) so this does not misfire on form 2.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)versions\\.env$/", "/(^|/)Justfile$/", "/(^|/)Containerfile$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+?)(?: extractVersion=(?<extractVersion>\\S+))?\\n(?:ARG )?[A-Za-z_]+ *:?= *\"?(?<currentValue>v?\\d[^\\s\"]*)\"?",
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+?)(?: extractVersion=(?<extractVersion>\\S+))?\\n[a-z_]+ := env_var_or_default\\(\"[A-Z_0-9]+\", \"(?<currentValue>[^\"]+)\"\\)"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "The dockerfile manager sees FROM alpine as docker.io/alpine while the annotated pins use bare `alpine`; group them so versions.env, Justfile fallbacks, and every Containerfile ARG default bump in one PR.",
+      "matchDepNames": ["alpine", "docker.io/alpine"],
+      "groupName": "alpine"
+    },
+    {
+      "description": "App version bumps are never automerge candidates: a human reads the changelog before merging, and deploys stay manual (`just deploy <target>`).",
+      "matchDepNames": ["AdguardTeam/AdGuardHome", "docker.io/caddy"],
+      "automerge": false
+    }
+  ]
+}
