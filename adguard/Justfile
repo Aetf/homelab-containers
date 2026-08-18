@@ -1,6 +1,20 @@
 # Variables (Override these via command line: just deploy host=root@1.2.3.4)
 host := "gw"
-machine := "adguard"
+# Two active-active instances run side by side on the gateway (redundancy
+# without cross-host HA). Each instance has its own machine name, host state
+# dir and DHCP-reserved IPv4. The container-INTERNAL state path stays
+# /data/adguard for both — the adguard-<instance>.nspawn unit (owned by
+# ~/.config/gw-config) binds the per-instance host dir onto it, so the image,
+# the live AdGuardHome.yaml and the userfilters symlink stay instance-agnostic.
+instance := "alice"
+machine := "adguard-" + instance
+instance_ip := if instance == "alice" { "10.0.5.3" } else if instance == "bob" { "10.0.5.4" } else { error("unknown instance (want alice|bob): " + instance) }
+state_dir := "/data/adguard-" + instance
+# health_check=no skips step 5: ONLY for bootstrapping a brand-new instance
+# whose DHCP reservation does not exist yet (it cannot answer on its IP, and
+# there is no .old rootfs to roll back to either).
+health_check := "yes"
+image := "adguard-rootfs"
 remote_base := "/data/custom/machines"
 local_tar := "build/rootfs.tar"
 # Canonical values live in ../versions.env, exported by the top-level Justfile;
@@ -17,32 +31,35 @@ adguard_version := "v0.107.79"
 # Default to building the image
 default: build
 
-# 1. Build the local rootfs tarball.
+# 1. Build the local rootfs tarball (instance-agnostic: one image serves both).
 # NOT `podman build --output type=tar`: with warm layer cache it silently
 # emits tars missing whole layers' content, incl. every symlink (bitten
 # 2026-08-18 on rpi-host). create+export flattens the actual image.
 build:
-    @echo "Building rootfs for {{machine}}..."
+    @echo "Building rootfs for {{image}}..."
     mkdir -p build
     podman build --arch aarch64 -q \
         --build-arg ALPINE_VERSION={{alpine_version}} \
         --build-arg S6_OVERLAY_VERSION={{s6_version}} \
         --build-arg ADGUARD_VERSION={{adguard_version}} \
         --build-context shared=../shared \
-        -t {{machine}}-rootfs .
-    c=$(podman create --arch aarch64 {{machine}}-rootfs true) && \
+        -t {{image}} .
+    c=$(podman create --arch aarch64 {{image}} true) && \
         podman export "$c" > {{local_tar}} && podman rm "$c" >/dev/null
     @echo "Build complete: {{local_tar}}"
 
-# 2. Deploy to remote (Depends on 'build')
+# 2. Deploy one instance to the gateway (Depends on 'build'):
+#   just deploy               -> adguard-alice (10.0.5.3)
+#   just deploy instance=bob  -> adguard-bob   (10.0.5.4)
 # Validate-then-swap, same shape as caddy's: extract to {{machine}}.new,
 # --check-config against a copy of the live yaml with the NEW binary, then
 # swap. Previous rootfs kept at {{machine}}.old for instant rollback. This is
 # the WHOLE-HOUSE DNS - a validation failure aborts with the old container
-# still running untouched.
-# The adguard.nspawn unit is owned by ~/.config/gw-config, not deployed here.
+# still running untouched (and the sibling instance keeps serving throughout).
+# The adguard-<instance>.nspawn unit is owned by ~/.config/gw-config, not
+# deployed here.
 deploy: build
-    @echo "Deploying to {{host}}..."
+    @echo "Deploying {{machine}} to {{host}}..."
     cat {{local_tar}} | ssh {{host}} " \
         echo 'Step 1: Extracting new filesystem...' && \
         rm -rf {{remote_base}}/{{machine}}.new && \
@@ -51,7 +68,7 @@ deploy: build
         \
         echo 'Step 2: Validating live config with the new binary...' && \
         mkdir -p {{remote_base}}/{{machine}}.new/data/adguard && \
-        cp /data/adguard/AdGuardHome.yaml {{remote_base}}/{{machine}}.new/data/adguard/ && \
+        cp {{state_dir}}/AdGuardHome.yaml {{remote_base}}/{{machine}}.new/data/adguard/ && \
         chroot {{remote_base}}/{{machine}}.new /opt/AdGuardHome/AdGuardHome \
             --check-config -c /data/adguard/AdGuardHome.yaml -w /data/adguard && \
         rm -rf {{remote_base}}/{{machine}}.new/data && \
@@ -68,23 +85,27 @@ deploy: build
         systemctl start systemd-nspawn@{{machine}}.service && \
         \
         echo 'Step 5: Health check (auto-rollback on failure)...' && \
-        ok=; for i in \$(seq 1 15); do \
-            nslookup -timeout=2 google.com 10.0.5.3 >/dev/null 2>&1 && { ok=1; echo \"DNS answering (attempt \$i)\"; break; }; \
-        done; \
-        if [ -z \"\$ok\" ]; then \
-            echo 'HEALTH CHECK FAILED - rolling back to {{machine}}.old'; \
-            systemctl stop systemd-nspawn@{{machine}}.service; \
-            systemctl kill -s SIGKILL systemd-nspawn@{{machine}}.service 2>/dev/null; \
-            systemctl reset-failed systemd-nspawn@{{machine}}.service 2>/dev/null; \
-            rm -rf {{remote_base}}/{{machine}}.failed && \
-            mv {{remote_base}}/{{machine}} {{remote_base}}/{{machine}}.failed && \
-            mv {{remote_base}}/{{machine}}.old {{remote_base}}/{{machine}} && \
-            systemctl start systemd-nspawn@{{machine}}.service; \
-            echo 'Rolled back; failed rootfs kept at {{machine}}.failed'; \
-            exit 1; \
+        if [ '{{health_check}}' != yes ]; then \
+            echo 'Health check SKIPPED (bootstrap: no DHCP reservation, no .old to roll back to)'; \
+        else \
+            ok=; for i in \$(seq 1 15); do \
+                nslookup -timeout=2 google.com {{instance_ip}} >/dev/null 2>&1 && { ok=1; echo \"DNS answering on {{instance_ip}} (attempt \$i)\"; break; }; \
+            done; \
+            if [ -z \"\$ok\" ]; then \
+                echo 'HEALTH CHECK FAILED - rolling back to {{machine}}.old'; \
+                systemctl stop systemd-nspawn@{{machine}}.service; \
+                systemctl kill -s SIGKILL systemd-nspawn@{{machine}}.service 2>/dev/null; \
+                systemctl reset-failed systemd-nspawn@{{machine}}.service 2>/dev/null; \
+                rm -rf {{remote_base}}/{{machine}}.failed && \
+                mv {{remote_base}}/{{machine}} {{remote_base}}/{{machine}}.failed && \
+                mv {{remote_base}}/{{machine}}.old {{remote_base}}/{{machine}} && \
+                systemctl start systemd-nspawn@{{machine}}.service; \
+                echo 'Rolled back; failed rootfs kept at {{machine}}.failed'; \
+                exit 1; \
+            fi; \
         fi \
     "
-    @echo "Deployed. Rollback: ssh {{host}}, stop unit, swap {{machine}}.old back, start."
+    @echo "Deployed {{machine}}. Rollback: ssh {{host}}, stop unit, swap {{machine}}.old back, start."
 
 # Clean up local artifacts
 clean:
