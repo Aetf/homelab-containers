@@ -5,10 +5,13 @@ remote_base := "/data/custom/machines"
 local_tar := "build/rootfs.tar"
 # Canonical values live in ../versions.env, exported by the top-level Justfile;
 # defaults here only serve direct standalone invocation.
+# renovate: datasource=docker depName=alpine
 alpine_version := env_var_or_default("ALPINE_VERSION", "3.23.0")
+# renovate: datasource=github-releases depName=just-containers/s6-overlay extractVersion=^v(?<version>.+)$
 s6_version := env_var_or_default("S6_OVERLAY_VERSION", "3.2.2.0")
 # AdGuardHome release pin (target-specific, not in versions.env). Upgrade =
 # bump, `just deploy adguard` — replaces the in-place web-UI updater flow.
+# renovate: datasource=github-releases depName=AdguardTeam/AdGuardHome
 adguard_version := "v0.107.78"
 
 # Default to building the image

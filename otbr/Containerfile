@@ -4,6 +4,7 @@ FROM docker.io/alpine:${ALPINE_VERSION} AS builder
 
 ARG GITHUB_REPO="openthread/ot-br-posix"
 ARG GIT_COMMIT="refs/heads/main"
+# renovate: datasource=github-releases depName=just-containers/s6-overlay extractVersion=^v(?<version>.+)$
 ARG S6_OVERLAY_VERSION=3.2.2.0
 
 WORKDIR /work

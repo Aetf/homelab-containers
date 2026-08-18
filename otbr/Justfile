@@ -2,6 +2,7 @@ GITHUB_REPO := "openthread/ot-br-posix"
 GIT_BRANCH := "main"
 # Canonical value lives in ../versions.env, exported by the top-level Justfile;
 # the default here only serves direct standalone invocation.
+# renovate: datasource=github-releases depName=just-containers/s6-overlay extractVersion=^v(?<version>.+)$
 s6_version := env_var_or_default("S6_OVERLAY_VERSION", "3.2.2.0")
 
 # Shared podman build invocation; `commit` is a resolved ot-br-posix commit sha.
