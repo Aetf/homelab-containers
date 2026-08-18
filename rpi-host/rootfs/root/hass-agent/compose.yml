@@ -1,0 +1,51 @@
+# go-hass-agent: reports host metrics to Home Assistant.
+#
+# The long-lived HA registration token is NOT in this file (it used to be, in
+# the device-local copy): compose interpolates ${HASS_REG_TOKEN} from the
+# .env file next to this compose.yml, which is device state injected at
+# image-assembly time and never committed to git. It is only consulted by the
+# one-shot register service on a fresh /var/lib/hass-agent.
+
+version: "3.8"
+x-common-labels:
+  default-service: &default-service
+    image: ghcr.io/joshuar/go-hass-agent:v14.0.2
+    restart: always
+    env_file: []
+services:
+  register:
+    <<: *default-service
+    container_name: hass-agent-register
+    # oneshot to register
+    restart: "no"
+    volumes:
+      - /var/lib/hass-agent:/home/go-hass-agent:U
+    network_mode: "host"
+    command:
+      - "register"
+      - "--server"
+      - "https://haos.unlimited-code.works"
+      - "--token"
+      - "${HASS_REG_TOKEN}"
+  hass-agent:
+    <<: *default-service
+    depends_on:
+      register:
+        condition: service_completed_successfully
+    container_name: hass-agent
+    hostname: rpi
+    network_mode: "host"
+    cap_add:
+      - SYS_ADMIN
+      - SYS_RAWIO
+      - MKNOD
+    volumes:
+      - /var/lib/hass-agent:/home/go-hass-agent:U
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /dev:/host/dev:ro
+      - /run/dbus:/run/dbus
+    envs:
+      PROFCS_ROOT: /host/proc
+      SYSFS_ROOT: /host/sys
+      DEVFS_ROOT: /host/dev

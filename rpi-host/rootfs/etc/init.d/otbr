@@ -1,0 +1,41 @@
+#!/sbin/openrc-run
+
+name="OpenThread Boarder Router"
+SLUG="otbr"
+COMPOSE_FILE="/root/$SLUG/compose.yml"
+
+command="/usr/bin/podman"
+# Run compose attached, capture stderr, and pipe directly to the local syslog
+command_args="compose -f $COMPOSE_FILE up --no-recreate"
+command_background="yes"
+pidfile="/run/$SLUG.pid"
+
+output_logger="logger -t $SLUG -p daemon.info"
+error_logger="logger -t $SLUG -p daemon.err"
+
+depend() {
+    need syslog net localmount
+    after *
+}
+
+stop() {
+    ebegin "Stopping $name"
+    podman compose -f $COMPOSE_FILE down
+    eend $?
+}
+
+start_post() {
+    # leaderweight is runtime-only and resets to 64 whenever the agent
+    # restarts; re-apply so this always-on wired BR wins leader elections
+    # over the frequently-rebooting test BRs.
+    (
+        i=0
+        while [ $i -lt 60 ]; do
+            if podman exec otbr ot-ctl leaderweight 72 >/dev/null 2>&1; then
+                logger -t otbr "leaderweight set to 72"
+                break
+            fi
+            i=$((i+1)); sleep 5
+        done
+    ) &
+}

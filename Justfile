@@ -14,3 +14,7 @@ build target:
 
 deploy target:
     just --justfile {{target}}/Justfile --working-directory {{target}} deploy
+
+# rpi-host only: assemble the flashable SD image
+image target:
+    just --justfile {{target}}/Justfile --working-directory {{target}} image

@@ -1,0 +1,43 @@
+# rpi-host: bootable SD image for the RPi 1 B Thread border router host
+# (alpine armhf sys-mode, replicating the live device; see Containerfile).
+#
+# Unlike the container targets there is no push-deploy: `just image` produces
+# build/rpi-host.img, flashing the SD card is a physical operation. The image
+# is personalized at assembly time with state fetched from the LIVE device
+# (ssh host keys, /var/lib/otbr, HA token, ...) - secrets end up only in the
+# gitignored build/ dir, never in git.
+#
+# Post-flash: the image contains no container images; run `just deploy otbr`
+# from ../otbr (loads the OCI image + up), hass-agent pulls from ghcr on
+# first start.
+
+alpine_version := env_var_or_default("ALPINE_VERSION", "3.23.0")
+
+default: build
+
+# 1. Build the armhf rootfs tarball.
+# NOT `podman build --output type=tar`: with warm layer cache it silently
+# emits tars missing whole layers' content, incl. every symlink (bitten
+# 2026-08-18). create+export flattens the actual image and is reliable.
+build:
+    @echo "Building rootfs for rpi-host..."
+    mkdir -p build
+    podman build --platform linux/arm/v6 -q \
+        --build-arg ALPINE_VERSION={{alpine_version}} \
+        --build-context otbr=../otbr \
+        -t rpi-host-rootfs .
+    c=$(podman create --platform linux/arm/v6 rpi-host-rootfs true) && \
+        podman export "$c" > build/rootfs.tar && podman rm "$c" >/dev/null
+    @echo "Build complete: build/rootfs.tar"
+
+# 2. Pull device state from the live rpi (secrets -> gitignored build/)
+fetch-state:
+    ./fetch-state.sh
+
+# 3. Assemble the flashable image (rootless, inside a helper container)
+image: build fetch-state
+    podman run --rm --platform linux/amd64 -v "$PWD:/work" -w /work \
+        docker.io/alpine:{{alpine_version}} sh /work/assemble.sh
+
+clean:
+    rm -rf build

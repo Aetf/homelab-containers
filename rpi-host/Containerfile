@@ -1,0 +1,45 @@
+ARG ALPINE_VERSION=3.23.0
+
+FROM docker.io/alpine:${ALPINE_VERSION}
+
+# mkinitfs.conf must be in place BEFORE linux-rpi so the kernel post-install
+# generates the initramfs with the right features (base mmc usb ext4).
+COPY rootfs/etc/mkinitfs/mkinitfs.conf /etc/mkinitfs/mkinitfs.conf
+
+# Exact apk world of the live device (captured 2026-08-18), which this image
+# replaces. linux-firmware-none: Pi 1 B needs no firmware blobs (smsc95xx USB
+# ethernet), keeps the image small.
+RUN apk add --no-cache \
+        alpine-base busybox-mdev-openrc \
+        dosfstools e2fsprogs \
+        git htop neovim tmux \
+        iproute2 ipset iptables libcap \
+        linux-firmware-none linux-rpi raspberrypi-bootloader \
+        openssh openssl \
+        podman podman-compose \
+        uutils uutils-coreutils
+
+# The otbr compose deployment files come from the otbr target - single source
+# (build with --build-context otbr=../otbr). The pinned OTBR_TAG (.env) is
+# state, injected at image-assembly time from the live device.
+COPY --from=otbr compose.yml otbr.env /root/otbr/
+
+COPY rootfs /
+
+# Runlevels: replicate the live device exactly (note: swclock not hwclock -
+# no RTC; no avahi - mDNS is done by OTBR itself, the live avahi symlink was
+# a stale leftover we deliberately drop).
+RUN chmod +x /etc/init.d/otbr /etc/init.d/hass-agent \
+    && chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys \
+    && for s in bootmisc networking seedrng syslog modules hostname sysctl swclock; do \
+         rc-update add "$s" boot; done \
+    && for s in dmesg mdev devfs hwdrivers; do rc-update add "$s" sysinit; done \
+    && for s in mount-ro savecache killprocs; do rc-update add "$s" shutdown; done \
+    && for s in crond cgroups ntpd sshd iptables ip6tables otbr hass-agent; do \
+         rc-update add "$s" default; done
+
+# NOT done here on purpose:
+# - no ssh-keygen -A: host keys are device state (assembly overlay); alpine's
+#   sshd init generates missing ones on a truly fresh device.
+# - no root password: /etc/shadow comes from the state overlay.
+# - no fstab/cmdline.txt: generated at assembly with the fresh fs UUIDs.

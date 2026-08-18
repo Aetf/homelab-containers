@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+
+name="HASS Agent"
+SLUG="hass-agent"
+COMPOSE_FILE="/root/$SLUG/compose.yml"
+
+command="/usr/bin/podman"
+# Run compose attached, capture stderr, and pipe directly to the local syslog
+command_args="compose -f $COMPOSE_FILE up"
+command_background="yes"
+pidfile="/run/$SLUG.pid"
+
+output_logger="logger -t $SLUG -p daemon.info"
+error_logger="logger -t $SLUG -p daemon.err"
+
+depend() {
+    need syslog net localmount
+    after *
+}
+
+stop() {
+    ebegin "Stopping $name"
+    podman compose -f $COMPOSE_FILE down
+    eend $?
+}

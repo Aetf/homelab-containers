@@ -1,0 +1,1 @@
+SYSLOGD_OPTS="-t -R aetf-arch-homelab.home.arpa:514"

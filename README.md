@@ -17,9 +17,12 @@ just deploy <target>    # build + ship + restart
 | `caddy` | aarch64 | rootfs tar (`podman build --output type=tar`) → validate-then-swap over ssh | systemd-nspawn container on the UDM-SE (`gw`) |
 | `adguard` | aarch64 | rootfs tar → validate-then-swap (`--check-config`) over ssh | systemd-nspawn container on the UDM-SE; whole-house DNS. State in `/data/adguard` (separated 2026-08-17) |
 | `otbr` | arm/v6 | OCI image → `podman save \| ssh rpi podman load` | podman container on the RPi Thread border router |
+| `rpi-host` | arm/v6 | rootfs tar → `just image`: flashable SD .img (FAT boot + ext4 root, assembled rootless in a helper container), personalized with state fetched from the live device | the RPi 1 B TBR host itself (alpine sys-mode, OpenRC) |
 
-Planned: `rpi-host` (bootable SD image for the RPi itself: same rootfs build +
-a genimage/FAT+ext4 assembly step; single device, armhf).
+`rpi-host` has no push-deploy: flashing the SD is physical. Its image carries
+NO secrets in git — device identity (ssh host keys, HA token, Thread state,
+root password hash) is pulled from the live device into gitignored `build/`
+at assembly time and overlaid into the image.
 
 ## Shared pieces
 
@@ -52,7 +55,12 @@ rotate + scrub history before ever publishing this repo.)
 
 ## Known limitations
 
-- `podman build --output type=tar` drops xattrs, including file capabilities
+- **Never use `podman build --output type=tar`**: with a warm layer cache it
+  can silently emit tars missing entire layers' contents — including every
+  symlink down to busybox applets (bitten 2026-08-18 on rpi-host; the image
+  itself was fine). All build recipes therefore tag the image and flatten it
+  via `podman create` + `podman export`.
+- The exported rootfs tar drops xattrs, including file capabilities
   (verified 2026-08-17: xcaddy's `setcap cap_net_bind_service` on the caddy
   binary is absent from the tar). Harmless while services run as root inside
   the containers; revisit before any target relies on file caps for non-root

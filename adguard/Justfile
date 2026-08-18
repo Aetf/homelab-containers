@@ -14,7 +14,10 @@ adguard_version := "v0.107.78"
 # Default to building the image
 default: build
 
-# 1. Build the local rootfs tarball
+# 1. Build the local rootfs tarball.
+# NOT `podman build --output type=tar`: with warm layer cache it silently
+# emits tars missing whole layers' content, incl. every symlink (bitten
+# 2026-08-18 on rpi-host). create+export flattens the actual image.
 build:
     @echo "Building rootfs for {{machine}}..."
     mkdir -p build
@@ -23,7 +26,9 @@ build:
         --build-arg S6_OVERLAY_VERSION={{s6_version}} \
         --build-arg ADGUARD_VERSION={{adguard_version}} \
         --build-context shared=../shared \
-        --output type=tar,dest={{local_tar}} .
+        -t {{machine}}-rootfs .
+    c=$(podman create --arch aarch64 {{machine}}-rootfs true) && \
+        podman export "$c" > {{local_tar}} && podman rm "$c" >/dev/null
     @echo "Build complete: {{local_tar}}"
 
 # 2. Deploy to remote (Depends on 'build')
