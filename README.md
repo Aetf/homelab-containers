@@ -1,75 +1,72 @@
-# homelab-containers — unified alpine image builds for edge devices
+# homelab-containers — one build engine for every edge device
 
-Single build engine (Containerfile + rootless podman, cross-arch via qemu
-binfmt) producing alpine-based images for the homelab's edge devices. Each
-target is one directory with a `Containerfile`, an optional `rootfs/` overlay,
-and a `Justfile` implementing `build` and `deploy` for its output kind.
+Alpine-based images for the odd little computers in my homelab, all built the
+same way: a `Containerfile` + rootless podman (cross-arch via qemu binfmt),
+one directory per target, `just build/deploy/image <target>`. The interesting
+part is that the *outputs* differ — the same engine feeds a systemd-nspawn
+rootfs, an OCI image, and a flashable SD card:
 
-```bash
-just build <target>     # build only
-just deploy <target>    # build + ship + restart
-```
-
-## Targets
-
-| Target | Arch | Output adapter | Runs as |
+| Target | Arch | Output | Runs as |
 |---|---|---|---|
-| `caddy` | aarch64 | rootfs tar (`podman build --output type=tar`) → validate-then-swap over ssh | systemd-nspawn container on the UDM-SE (`gw`) |
-| `adguard` | aarch64 | rootfs tar → validate-then-swap (`--check-config`) over ssh | systemd-nspawn container on the UDM-SE; whole-house DNS. State in `/data/adguard` (separated 2026-08-17) |
-| `otbr` | arm/v6 | OCI image → `podman save \| ssh rpi podman load` | podman container on the RPi Thread border router |
-| `rpi-host` | arm/v6 | rootfs tar → `just image`: flashable SD .img (FAT boot + ext4 root, assembled rootless in a helper container), personalized with state fetched from the live device | the RPi 1 B TBR host itself (alpine sys-mode, OpenRC) |
+| `caddy` | aarch64 | rootfs tar → validate-then-swap over ssh | systemd-nspawn container on a UniFi UDM-SE gateway |
+| `adguard` | aarch64 | rootfs tar → validate-then-swap (`--check-config`) + DNS health check with auto-rollback | systemd-nspawn container on the same gateway; whole-house DNS |
+| `otbr` | arm/v6 | OCI image → `podman save \| ssh podman load` | podman container on a Raspberry Pi 1 B Thread border router (upstream ot-br-posix doesn't ship armv6 images, so this builds from source on Alpine + s6-overlay) |
+| `rpi-host` | arm/v6 | flashable SD image (FAT boot + A/B ext4 root slots), assembled rootless | the Raspberry Pi itself (Alpine sys-mode, OpenRC) |
 
-`rpi-host` has no push-deploy: flashing the SD is physical. Its image carries
-NO secrets in git — device identity (ssh host keys, HA token, Thread state,
-root password hash) is pulled from the live device into gitignored `build/`
-at assembly time and overlaid into the image.
+## Design notes
 
-## Shared pieces
+- **Image vs state.** Images carry software only. Everything that makes a
+  device *that* device — ssh host keys, DNS state, Thread network data,
+  tokens — lives outside the image (bind-mounted `/data` on the gateway,
+  dedicated dirs on the Pi) or is overlaid into the artifact at assembly
+  time from the live device, into the gitignored `build/`. **No secrets in
+  this repo or its history.**
+- **Deploys are validate-then-swap.** nspawn targets extract to `<name>.new`,
+  validate the live config with the *new* binary inside a chroot, then
+  stop/swap/start, keeping the previous rootfs at `<name>.old` for instant
+  rollback. The DNS target additionally health-checks after start and
+  auto-rolls-back, capping a bad image at ~35s of downtime.
+- **The Pi reflashes online.** The SD image carries two root partitions;
+  `just deploy rpi-host` writes the new root to the inactive slot over ssh,
+  re-syncs live state onto it, flips `cmdline.txt` (backup kept), reboots
+  and health-checks. Only the very first flash of a card touches hardware.
+- **Version pins in one place.** `versions.env` pins ALPINE_VERSION /
+  S6_OVERLAY_VERSION for every target (the top-level Justfile exports them);
+  app versions pin in each target's Justfile. Upgrades are a bump + a
+  per-target rebuild, staged low-risk-first.
+- **Shared pieces.** `shared/install-s6.sh` installs s6-overlay in any
+  Containerfile via `--build-context shared=../shared`; s6-overlay is the
+  init in every container image (`/init`, copied to `/sbin/init` so
+  `systemd-nspawn --boot` finds it). Emulated builds stay tolerable through
+  layer caching plus `--mount=type=cache` ccache/npm mounts (see otbr).
 
-- `versions.env` — canonical ALPINE_VERSION / S6_OVERLAY_VERSION, exported to
-  target Justfiles by the top-level Justfile. Routine upgrade = bump here,
-  rebuild targets one by one (low-risk first).
-- `shared/install-s6.sh` — s6-overlay download/extract, used by every
-  Containerfile via `--build-context shared=../shared` + bind mount. All
-  images use s6-overlay as init (`/init`; nspawn targets also copy it to
-  `/sbin/init` so `Boot=on` finds it).
-- Emulated builds stay tolerable through podman layer caching plus
-  `--mount=type=cache` ccache/npm mounts (see otbr).
+## Hard-won lessons (a.k.a. why some of this looks paranoid)
 
-## Division of responsibility
+- **Never use `podman build --output type=tar`.** With a warm layer cache it
+  can silently emit tars missing whole layers' contents — down to every
+  busybox symlink — while the image itself is fine. Every build recipe tags
+  the image and flattens it with `podman create` + `podman export` instead.
+- The exported tar also drops xattrs/file capabilities (fine while services
+  run as root in these containers; revisit before relying on file caps).
+- **s6-rc oneshot `up` files are parsed by execlineb, not a shell.** Quoting
+  and multi-command shell syntax misparse silently; keep `up` a single path
+  to a real script.
+- **nspawn + s6-overlay needs `KillSignal=SIGKILL` and
+  `S6_KILL_GRACETIME=0`** in the `.nspawn` unit, or stops leave stale
+  s6-supervise processes that wedge the unit cgroup (219/CGROUP on the next
+  start).
+- podman healthchecks don't run on non-systemd hosts (no timer to fire
+  them); a container can sit in "(starting)" forever and be perfectly fine.
 
-This repo owns the **software layer** (what is inside the image). It does NOT
-own:
+## Deployment config lives elsewhere
 
-- **deployment config on gw** (`.nspawn` units, on_boot.d, drift checking):
-  `~/.config/gw-config` (yadm) — nspawn units live there because its
-  on_boot.d restores them from `/data/gw-config/nspawn` after firmware
-  updates. Do not add `.nspawn` files or scp steps here.
-- **runtime state and secrets**: `/data/...` on the device (survives deploys;
-  a deploy wipes the container rootfs). Caddyfile, cf_token, AdGuardHome
-  data, otbr's `/var/lib/otbr` are all state, not image content.
-
-NO SECRETS in this repo — images and git history are meant to be shareable.
-(A CF API token used to live in a `caddy.nspawn` here; removed 2026-08-17,
-rotate + scrub history before ever publishing this repo.)
-
-## Known limitations
-
-- **Never use `podman build --output type=tar`**: with a warm layer cache it
-  can silently emit tars missing entire layers' contents — including every
-  symlink down to busybox applets (bitten 2026-08-18 on rpi-host; the image
-  itself was fine). All build recipes therefore tag the image and flatten it
-  via `podman create` + `podman export`.
-- The exported rootfs tar drops xattrs, including file capabilities
-  (verified 2026-08-17: xcaddy's `setcap cap_net_bind_service` on the caddy
-  binary is absent from the tar). Harmless while services run as root inside
-  the containers; revisit before any target relies on file caps for non-root
-  low-port binding.
+This repo owns what is *inside* the images. Host-side deployment config
+(`.nspawn` units, boot-time restore scripts, drift checking, encrypted
+backups) is managed separately with the rest of my dotfiles; the split keeps
+this repo shareable and the device-recovery path self-contained there.
 
 ## TODO
 
-- caddy: ssh host keys are baked at build (`ssh-keygen -A`) so they rotate on
+- caddy: ssh host keys are baked at build (`ssh-keygen -A`) so they rotate
   every rebuild → known_hosts churn; move generation to a first-boot s6
   oneshot persisting into `/data/caddy`.
-- otbr: `otbr/mise.toml` (gemini-cli/node) predates the merge, review whether
-  still needed.

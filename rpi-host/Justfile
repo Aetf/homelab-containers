@@ -1,15 +1,16 @@
 # rpi-host: bootable SD image for the RPi 1 B Thread border router host
 # (alpine armhf sys-mode, replicating the live device; see Containerfile).
 #
-# Unlike the container targets there is no push-deploy: `just image` produces
-# build/rpi-host.img, flashing the SD card is a physical operation. The image
-# is personalized at assembly time with state fetched from the LIVE device
-# (ssh host keys, /var/lib/otbr, HA token, ...) - secrets end up only in the
-# gitignored build/ dir, never in git.
+# `just image` produces build/rpi-host.img with an A/B root layout,
+# personalized with state fetched from the LIVE device (ssh host keys,
+# /var/lib/otbr, HA token, ...) - secrets end up only in the gitignored
+# build/ dir, never in git.
 #
-# Post-flash: the image contains no container images; run `just deploy otbr`
-# from ../otbr (loads the OCI image + up), hass-agent pulls from ghcr on
-# first start.
+# First flash is physical (dd to the SD card; also run `just deploy otbr`
+# from ../otbr afterwards - the image carries no container images).
+# Every flash after that is ONLINE: `just deploy` writes the new root to the
+# inactive slot over ssh, flips cmdline.txt, reboots, health-checks, and
+# reinstalls the otbr image (see deploy.sh).
 
 alpine_version := env_var_or_default("ALPINE_VERSION", "3.23.0")
 
@@ -38,6 +39,10 @@ fetch-state:
 image: build fetch-state
     podman run --rm --platform linux/amd64 -v "$PWD:/work" -w /work \
         docker.io/alpine:{{alpine_version}} sh /work/assemble.sh
+
+# 4. Online A/B redeploy (requires the card to already carry the A/B layout)
+deploy: image
+    ./deploy.sh
 
 clean:
     rm -rf build

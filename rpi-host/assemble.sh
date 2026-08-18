@@ -47,18 +47,26 @@ mcopy -i boot.img -s bootfs/* ::/
 echo "== building ext4 root partition"
 mke2fs -q -t ext4 -d root -U "$ROOT_UUID" -L rpiroot root.img "${ROOT_MB}M"
 
-echo "== assembling partitioned image"
-truncate -s $((1 + BOOT_MB + ROOT_MB + 1))M img
+echo "== assembling partitioned image (A/B root slots)"
+# p2 = root slot A (populated), p3 = root slot B (bare partition, no fs):
+# future deploys write the inactive slot over ssh and flip cmdline.txt,
+# so reflashing never needs physical access again after the first flash.
+truncate -s $((1 + BOOT_MB + ROOT_MB + ROOT_MB + 1))M img
 sfdisk -q img <<EOF
 label: dos
 unit: sectors
 start=2048, size=$((BOOT_MB * 2048)), type=c
 start=$((2048 + BOOT_MB * 2048)), size=$((ROOT_MB * 2048)), type=83
+start=$((2048 + (BOOT_MB + ROOT_MB) * 2048)), size=$((ROOT_MB * 2048)), type=83
 EOF
 dd if=boot.img of=img bs=1M seek=1 conv=notrunc,sparse status=none
 dd if=root.img of=img bs=1M seek=$((1 + BOOT_MB)) conv=notrunc,sparse status=none
 
 mv img "../${OUT##*/}"
+# keep the bare root partition image + its UUID for the online A/B deploy
+mv root.img ../rootpart.img
+printf '%s\n' "$ROOT_UUID" > ../rootpart.uuid
 cd ..; rm -rf .asm
-echo "== done: $OUT (flash with: dd if=$OUT of=/dev/sdX bs=4M conv=fsync)"
-ls -lhs "${OUT##*/}"
+echo "== done: $OUT (first flash: dd if=$OUT of=/dev/sdX bs=4M conv=fsync)"
+echo "==       online redeploy afterwards: just deploy (writes rootpart.img to the inactive slot)"
+ls -lhs "${OUT##*/}" rootpart.img
