@@ -5,9 +5,21 @@
 # verbatim and broke the whole boot).
 
 # Set the SLAAC interface token BEFORE bringing host0 up (RAs are only
-# processed once up), so the v6 address is always <prefix>::a00:503 and the
+# processed once up), so the v6 address is always <prefix>::<token> and the
 # UniFi dns-server DHCPv6 option keeps pointing at us across prefix changes.
-# Replaces the systemd-networkd Token= drop-in from the old debian container.
-ip token set ::10.0.5.3 dev host0
+#
+# The token is instance-specific (alice=::10.0.5.3, bob=::10.0.5.4) and comes
+# from the host via the adguard-<instance>.nspawn unit's Environment= (PID1
+# env, readable here through with-contenv — same channel that already carries
+# S6_KILL_GRACETIME). Fail fast if it is missing: a DNS server that silently
+# came up on the wrong v6 address is worse than one that visibly didn't start.
+if [ -z "${IPV6_TOKEN}" ]; then
+    echo "ifup-up: IPV6_TOKEN is not set (expected Environment=IPV6_TOKEN=::10.0.5.x in the .nspawn unit)" >&2
+    exit 1
+fi
+# Also fatal on failure (malformed token / missing host0): adguardhome
+# depends on this oneshot, so exiting non-zero keeps DNS from starting on a
+# wrong address.
+ip token set "${IPV6_TOKEN}" dev host0 || exit 1
 
 exec ifup -a

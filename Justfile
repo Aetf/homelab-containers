@@ -12,8 +12,10 @@ default:
 build target:
     just --justfile {{target}}/Justfile --working-directory {{target}} build
 
-deploy target:
-    just --justfile {{target}}/Justfile --working-directory {{target}} deploy
+# Extra args pass through to the target Justfile as variable overrides,
+# e.g. `just deploy adguard instance=bob`.
+deploy target *args:
+    just --justfile {{target}}/Justfile --working-directory {{target}} {{args}} deploy
 
 # rpi-host only: assemble the flashable SD image
 image target:
