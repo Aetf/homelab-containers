@@ -70,7 +70,14 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends just podman qemu-user-static
+          sudo apt-get install -y --no-install-recommends just podman
+      # NOT apt's qemu-user-static: Ubuntu 24.04's qemu 8.2 hangs emulating
+      # 32-bit arm here (rpi-host sat 45min in `apk add`; the same no-cache
+      # build takes 26s under qemu 10). Known issue class, see e.g.
+      # docker/build-push-action#1071; tonistiigi/binfmt ships a current qemu.
+      - name: Register qemu binfmt (armv6)
+        if: matrix.target == 'rpi-host'
+        run: docker run --privileged --rm docker.io/tonistiigi/binfmt --install arm
       - name: Build ${{ matrix.target }}
         run: just build ${{ matrix.target }}
 
