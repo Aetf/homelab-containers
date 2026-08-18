@@ -8,8 +8,8 @@
       "customType": "regex",
       "managerFilePatterns": ["/(^|/)versions\\.env$/", "/(^|/)Justfile$/", "/(^|/)Containerfile$/"],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+?)(?: extractVersion=(?<extractVersion>\\S+))?\\n(?:ARG )?[A-Za-z_]+ *:?= *\"?(?<currentValue>v?\\d[^\\s\"]*)\"?",
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+?)(?: extractVersion=(?<extractVersion>\\S+))?\\n[a-z_]+ := env_var_or_default\\(\"[A-Z_0-9]+\", \"(?<currentValue>[^\"]+)\"\\)"
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+?)(?: extractVersion=(?<extractVersion>\\S+))?\\n(?:ARG )?[A-Za-z0-9_]+ *:?= *\"?(?<currentValue>v?\\d[^\\s\"]*)\"?",
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+?)(?: extractVersion=(?<extractVersion>\\S+))?\\n[a-z0-9_]+ := env_var_or_default\\(\"[A-Z0-9_]+\", \"(?<currentValue>[^\"]+)\"\\)"
       ]
     }
   ],
