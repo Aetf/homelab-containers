@@ -1,9 +1,1 @@
-#!/command/with-contenv ash
-
-# Set the SLAAC interface token BEFORE bringing host0 up (RAs are only
-# processed once up), so the v6 address is always <prefix>::a00:503 and the
-# UniFi dns-server DHCPv6 option keeps pointing at us across prefix changes.
-# Replaces the systemd-networkd Token= drop-in from the old debian container.
-ip token set '::10.0.5.3' dev host0
-
-exec ifup -a
+/etc/s6-overlay/scripts/ifup-up

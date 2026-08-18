@@ -56,7 +56,25 @@ deploy: build
         ln -sfn {{remote_base}}/{{machine}} /var/lib/machines/{{machine}} && \
         \
         echo 'Step 4: Starting machine...' && \
-        systemctl start systemd-nspawn@{{machine}}.service \
+        systemctl reset-failed systemd-nspawn@{{machine}}.service 2>/dev/null; \
+        systemctl start systemd-nspawn@{{machine}}.service && \
+        \
+        echo 'Step 5: Health check (auto-rollback on failure)...' && \
+        ok=; for i in \$(seq 1 15); do \
+            nslookup -timeout=2 google.com 10.0.5.3 >/dev/null 2>&1 && { ok=1; echo \"DNS answering (attempt \$i)\"; break; }; \
+        done; \
+        if [ -z \"\$ok\" ]; then \
+            echo 'HEALTH CHECK FAILED - rolling back to {{machine}}.old'; \
+            systemctl stop systemd-nspawn@{{machine}}.service; \
+            systemctl kill -s SIGKILL systemd-nspawn@{{machine}}.service 2>/dev/null; \
+            systemctl reset-failed systemd-nspawn@{{machine}}.service 2>/dev/null; \
+            rm -rf {{remote_base}}/{{machine}}.failed && \
+            mv {{remote_base}}/{{machine}} {{remote_base}}/{{machine}}.failed && \
+            mv {{remote_base}}/{{machine}}.old {{remote_base}}/{{machine}} && \
+            systemctl start systemd-nspawn@{{machine}}.service; \
+            echo 'Rolled back; failed rootfs kept at {{machine}}.failed'; \
+            exit 1; \
+        fi \
     "
     @echo "Deployed. Rollback: ssh {{host}}, stop unit, swap {{machine}}.old back, start."
 
