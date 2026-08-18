@@ -1,0 +1,47 @@
+ARG ALPINE_VERSION=3.23.0
+
+FROM docker.io/alpine:${ALPINE_VERSION} AS builder
+
+RUN apk add curl ca-certificates
+
+# s6-overlay via the shared installer (build with --build-context shared=../shared)
+ARG S6_OVERLAY_VERSION=3.2.2.0
+ARG TARGETARCH
+ARG TARGETVARIANT
+RUN --mount=type=bind,from=shared,target=/shared \
+    sh /shared/install-s6.sh /install
+
+# AdGuardHome official static binary (Go, works on musl; no apk package exists)
+ARG ADGUARD_VERSION=v0.107.78
+RUN case "${TARGETARCH}${TARGETVARIANT:+/$TARGETVARIANT}" in \
+      "amd64")  AGH_ARCH="amd64" ;; \
+      "arm64")  AGH_ARCH="arm64" ;; \
+      "arm/v7") AGH_ARCH="armv7" ;; \
+      "arm/v6") AGH_ARCH="armv6" ;; \
+      *) echo "Unsupported architecture"; exit 1 ;; \
+    esac \
+    && mkdir /install-agh \
+    && curl -L -f -s --retry 3 \
+       "https://github.com/AdguardTeam/AdGuardHome/releases/download/${ADGUARD_VERSION}/AdGuardHome_linux_${AGH_ARCH}.tar.gz" \
+       | tar -xz -C /install-agh --strip-components=2   # paths are ./AdGuardHome/…
+
+FROM docker.io/alpine:${ALPINE_VERSION}
+
+# ca-certificates: the DoT upstreams (tls://) need a trust store.
+# iproute2-minimal: busybox ip has no `token` subcommand (see ifup service).
+RUN apk add --no-cache ifupdown-ng iproute2-minimal ca-certificates
+
+COPY --from=builder /install /
+# Also make s6 init in regular init location, so systemd-nspawn can find and
+# boot
+COPY --from=builder /install/init /sbin/init
+COPY --from=builder /install-agh/ /opt/AdGuardHome/
+
+# State lives in /data/adguard (host bind via adguard.nspawn Bind=/data); the
+# live AdGuardHome.yaml references /opt/AdGuardHome/userfilters/* by absolute
+# path, keep that working across rootfs swaps.
+RUN ln -s /data/adguard/userfilters /opt/AdGuardHome/userfilters
+
+COPY rootfs /
+
+ENTRYPOINT ["/init"]

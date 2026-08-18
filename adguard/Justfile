@@ -1,0 +1,65 @@
+# Variables (Override these via command line: just deploy host=root@1.2.3.4)
+host := "gw"
+machine := "adguard"
+remote_base := "/data/custom/machines"
+local_tar := "build/rootfs.tar"
+# Canonical values live in ../versions.env, exported by the top-level Justfile;
+# defaults here only serve direct standalone invocation.
+alpine_version := env_var_or_default("ALPINE_VERSION", "3.23.0")
+s6_version := env_var_or_default("S6_OVERLAY_VERSION", "3.2.2.0")
+# AdGuardHome release pin (target-specific, not in versions.env). Upgrade =
+# bump, `just deploy adguard` — replaces the in-place web-UI updater flow.
+adguard_version := "v0.107.78"
+
+# Default to building the image
+default: build
+
+# 1. Build the local rootfs tarball
+build:
+    @echo "Building rootfs for {{machine}}..."
+    mkdir -p build
+    podman build --arch aarch64 -q \
+        --build-arg ALPINE_VERSION={{alpine_version}} \
+        --build-arg S6_OVERLAY_VERSION={{s6_version}} \
+        --build-arg ADGUARD_VERSION={{adguard_version}} \
+        --build-context shared=../shared \
+        --output type=tar,dest={{local_tar}} .
+    @echo "Build complete: {{local_tar}}"
+
+# 2. Deploy to remote (Depends on 'build')
+# Validate-then-swap, same shape as caddy's: extract to {{machine}}.new,
+# --check-config against a copy of the live yaml with the NEW binary, then
+# swap. Previous rootfs kept at {{machine}}.old for instant rollback. This is
+# the WHOLE-HOUSE DNS - a validation failure aborts with the old container
+# still running untouched.
+# The adguard.nspawn unit is owned by ~/.config/gw-config, not deployed here.
+deploy: build
+    @echo "Deploying to {{host}}..."
+    cat {{local_tar}} | ssh {{host}} " \
+        echo 'Step 1: Extracting new filesystem...' && \
+        rm -rf {{remote_base}}/{{machine}}.new && \
+        mkdir -p {{remote_base}}/{{machine}}.new && \
+        tar -x -C {{remote_base}}/{{machine}}.new && \
+        \
+        echo 'Step 2: Validating live config with the new binary...' && \
+        mkdir -p {{remote_base}}/{{machine}}.new/data/adguard && \
+        cp /data/adguard/AdGuardHome.yaml {{remote_base}}/{{machine}}.new/data/adguard/ && \
+        chroot {{remote_base}}/{{machine}}.new /opt/AdGuardHome/AdGuardHome \
+            --check-config -c /data/adguard/AdGuardHome.yaml -w /data/adguard && \
+        rm -rf {{remote_base}}/{{machine}}.new/data && \
+        \
+        echo 'Step 3: Swapping (old kept as {{machine}}.old)...' && \
+        systemctl stop systemd-nspawn@{{machine}}.service && \
+        rm -rf {{remote_base}}/{{machine}}.old && \
+        { mv {{remote_base}}/{{machine}} {{remote_base}}/{{machine}}.old 2>/dev/null || true; } && \
+        mv {{remote_base}}/{{machine}}.new {{remote_base}}/{{machine}} && \
+        ln -sfn {{remote_base}}/{{machine}} /var/lib/machines/{{machine}} && \
+        \
+        echo 'Step 4: Starting machine...' && \
+        systemctl start systemd-nspawn@{{machine}}.service \
+    "
+    @echo "Deployed. Rollback: ssh {{host}}, stop unit, swap {{machine}}.old back, start."
+
+# Clean up local artifacts
+clean:
+    rm -f {{local_tar}}

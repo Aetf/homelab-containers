@@ -1,0 +1,4 @@
+# interfaces(5) file used by ifup(8) and ifdown(8)
+# IPv4 10.0.5.3 comes from the UniFi DHCP reservation.
+auto host0
+iface host0 inet dhcp

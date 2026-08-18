@@ -14,13 +14,12 @@ just deploy <target>    # build + ship + restart
 
 | Target | Arch | Output adapter | Runs as |
 |---|---|---|---|
-| `caddy` | aarch64 | rootfs tar (`podman build --output type=tar`) → ssh stop/wipe/extract/start | systemd-nspawn container on the UDM-SE (`gw`) |
+| `caddy` | aarch64 | rootfs tar (`podman build --output type=tar`) → validate-then-swap over ssh | systemd-nspawn container on the UDM-SE (`gw`) |
+| `adguard` | aarch64 | rootfs tar → validate-then-swap (`--check-config`) over ssh | systemd-nspawn container on the UDM-SE; whole-house DNS. State in `/data/adguard` (separated 2026-08-17) |
 | `otbr` | arm/v6 | OCI image → `podman save \| ssh rpi podman load` | podman container on the RPi Thread border router |
 
-Planned: `adguard` (nspawn on gw, replacing the debian pet container — hard
-prerequisite: move AdGuardHome state out of the rootfs first, deploys wipe it),
-`rpi-host` (bootable SD image for the RPi itself: same rootfs build + a
-genimage/FAT+ext4 assembly step; single device, armhf).
+Planned: `rpi-host` (bootable SD image for the RPi itself: same rootfs build +
+a genimage/FAT+ext4 assembly step; single device, armhf).
 
 ## Shared pieces
 

@@ -1,0 +1,5 @@
+#!/command/with-contenv ash
+
+# State (config + querylog/stats data) lives in /data/adguard, bind-mounted
+# from the host; the rootfs is a disposable image artifact.
+exec /opt/AdGuardHome/AdGuardHome -c /data/adguard/AdGuardHome.yaml -w /data/adguard
