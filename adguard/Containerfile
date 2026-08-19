@@ -30,8 +30,9 @@ RUN case "${TARGETARCH}${TARGETVARIANT:+/$TARGETVARIANT}" in \
 FROM docker.io/alpine:${ALPINE_VERSION}
 
 # ca-certificates: the DoT upstreams (tls://) need a trust store.
-# iproute2-minimal: busybox ip has no `token` subcommand (see ifup service).
-RUN apk add --no-cache ifupdown-ng iproute2-minimal ca-certificates
+# iproute2-minimal: busybox ip has no `token` subcommand (see net-setup
+# service, which statically configures host0 from .nspawn-injected env).
+RUN apk add --no-cache iproute2-minimal ca-certificates
 
 COPY --from=builder /install /
 # Also make s6 init in regular init location, so systemd-nspawn can find and
