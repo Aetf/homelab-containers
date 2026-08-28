@@ -1,5 +1,6 @@
 # Unified alpine image builds for homelab edge devices.
-# Usage: just build <target> / just deploy <target>   (targets: caddy, otbr)
+# Usage: just build <target> / just deploy <target>
+# Targets: caddy, adguard, zerotier (build-only), otbr, rpi-host
 # Base versions are pinned in versions.env and exported to target Justfiles.
 
 # dotenv values are exported into recipe environments automatically, so the

@@ -1,0 +1,109 @@
+# Publish the nspawn estate's rootfs tarballs (caddy, adguard, zerotier) as
+# GitHub release assets, one immutable release per run of this workflow.
+#
+# Consumer: the kluster physical stack pins each estate member to a
+# url + sha256 pair (`gatewayRootfs`); its GwArtifact resource fetches the URL
+# with a plain HTTPS GET and verifies the digest before anything reaches the
+# device. The contract this workflow upholds:
+#
+#   - a URL, once published, never changes content: every run creates a fresh
+#     release tagged rootfs-<run_number> and assets are never re-uploaded;
+#   - the version is digit-bearing and monotonic (the run number), so a
+#     renovate custom manager on the kluster side can bump the pin;
+#   - the sha256 of every asset is published three ways: a SHA256SUMS asset,
+#     the release notes, and the job summary (as a copy-paste `gatewayRootfs`
+#     snippet).
+#
+# All three targets build on every publish, changed or not: a release always
+# carries the complete estate, so one tag pins a coherent set. otbr and
+# rpi-host are not estate members and stay deploy-manual (`just deploy`).
+#
+# The tarball is a flat root filesystem tree (podman create + export of the
+# built image — see the build recipes for why NOT `podman build --output`),
+# compressed with zstd. The estate targets are aarch64-only: the UDM-SE is the
+# only machine that runs them.
+name: Publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Releases are numbered by run: publish them in order, never concurrently.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  TARGETS: caddy adguard zerotier
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends just podman zstd
+      - name: Build rootfs tarballs
+        run: |
+          for target in $TARGETS; do
+            just build "$target"
+          done
+      - name: Compress and checksum
+        run: |
+          mkdir -p dist
+          for target in $TARGETS; do
+            zstd -T0 -15 "$target/build/rootfs.tar" -o "dist/$target-arm64.tar.zst"
+          done
+          cd dist && sha256sum -- *.tar.zst | tee SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="rootfs-${{ github.run_number }}"
+          {
+            echo "Estate rootfs tarballs, built from ${{ github.sha }}."
+            echo
+            echo "Flat root filesystem trees for the gateway's nspawn estate,"
+            echo "pinned by digest from the kluster physical stack"
+            echo "(\`gatewayRootfs\`). \`adguard\` serves both resolver instances"
+            echo "(alice and bob)."
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } > notes.md
+          gh release create "$tag" \
+            --title "Estate rootfs $tag" \
+            --notes-file notes.md \
+            dist/*.tar.zst dist/SHA256SUMS
+      - name: Pin snippet in job summary
+        run: |
+          tag="rootfs-${{ github.run_number }}"
+          base="https://github.com/${{ github.repository }}/releases/download/$tag"
+          member_asset() {
+            case "$1" in
+              adguard-alice|adguard-bob) echo adguard-arm64.tar.zst ;;
+              *) echo "$1-arm64.tar.zst" ;;
+            esac
+          }
+          {
+            echo '`gatewayRootfs` pins for the kluster physical stack:'
+            echo
+            echo '```yaml'
+            echo 'gatewayRootfs:'
+            for member in caddy adguard-alice adguard-bob zerotier; do
+              asset=$(member_asset "$member")
+              sha=$(awk -v a="$asset" '$2 == a { print $1 }' dist/SHA256SUMS)
+              echo "  $member:"
+              echo "    url: $base/$asset"
+              echo "    sha256: $sha"
+            done
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
