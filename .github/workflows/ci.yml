@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@v4
       - id: all
         if: github.event_name == 'workflow_dispatch'
-        run: echo 'targets=["adguard","caddy","rpi-host"]' >> "$GITHUB_OUTPUT"
+        run: echo 'targets=["adguard","caddy","zerotier","rpi-host"]' >> "$GITHUB_OUTPUT"
       - id: filter
         if: github.event_name != 'workflow_dispatch'
         uses: dorny/paths-filter@v3
@@ -44,6 +44,11 @@ jobs:
               - '.github/workflows/ci.yml'
             caddy:
               - 'caddy/**'
+              - 'shared/**'
+              - 'versions.env'
+              - '.github/workflows/ci.yml'
+            zerotier:
+              - 'zerotier/**'
               - 'shared/**'
               - 'versions.env'
               - '.github/workflows/ci.yml'

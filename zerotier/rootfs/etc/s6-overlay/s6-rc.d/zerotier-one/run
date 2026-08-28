@@ -1,0 +1,8 @@
+#!/command/with-contenv ash
+
+# Identity (identity.secret/identity.public) and per-network state live in
+# /var/lib/zerotier-one, bind-mounted from the host by the estate's nspawn
+# unit; the rootfs is a disposable image artifact. The daemon needs
+# /dev/net/tun, also bound in by the unit. No -d: the daemon stays in the
+# foreground so s6 supervises it directly.
+exec /usr/sbin/zerotier-one /var/lib/zerotier-one

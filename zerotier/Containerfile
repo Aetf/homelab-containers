@@ -1,0 +1,53 @@
+ARG ALPINE_VERSION=3.23.0
+
+FROM docker.io/alpine:${ALPINE_VERSION} AS builder
+
+RUN apk add curl ca-certificates
+
+# s6-overlay via the shared installer (build with --build-context shared=../shared)
+# renovate: datasource=github-releases depName=just-containers/s6-overlay extractVersion=^v(?<version>.+)$
+ARG S6_OVERLAY_VERSION=3.2.2.0
+ARG TARGETARCH
+ARG TARGETVARIANT
+RUN --mount=type=bind,from=shared,target=/shared \
+    sh /shared/install-s6.sh /install
+
+# zerotier-one from source: upstream's BSL license keeps it out of every
+# distro repo (no Alpine package, not even in edge/testing), and upstream ships
+# only glibc deb/rpm packages — nothing that runs on musl. Same stance as otbr:
+# build from the pinned release tag on Alpine.
+# ZT_SSO_SUPPORTED=0 on the make command line beats the arch-conditional
+# assignments inside make-linux.mk (command-line variables win over plain
+# assignments): SSO is a paid Central feature and would drag in a Rust
+# toolchain (zeroidc) for nothing.
+# renovate: datasource=github-releases depName=zerotier/ZeroTierOne
+ARG ZEROTIER_VERSION=1.16.2
+RUN apk add build-base linux-headers openssl-dev \
+    && mkdir /src \
+    && curl -L -f -s --retry 3 \
+       "https://github.com/zerotier/ZeroTierOne/archive/refs/tags/${ZEROTIER_VERSION}.tar.gz" \
+       | tar -xz -C /src --strip-components=1 \
+    && make -C /src -f make-linux.mk -j"$(nproc)" ZT_SSO_SUPPORTED=0 one
+
+FROM docker.io/alpine:${ALPINE_VERSION}
+
+# libstdc++ is the musl-built zerotier-one's only runtime dependency.
+RUN apk add --no-cache libstdc++
+
+COPY --from=builder /install /
+# Also make s6 init in regular init location, so systemd-nspawn can find and
+# boot
+COPY --from=builder /install/init /sbin/init
+COPY --from=builder /src/zerotier-one /usr/sbin/zerotier-one
+
+# zerotier-cli / zerotier-idtool are argv[0] personalities of the same binary.
+# /var/lib/zerotier-one is the identity + network state directory, bind-mounted
+# from the host by the estate's nspawn unit; created here so the image also
+# runs standalone.
+RUN ln -s zerotier-one /usr/sbin/zerotier-cli \
+    && ln -s zerotier-one /usr/sbin/zerotier-idtool \
+    && mkdir -p /var/lib/zerotier-one
+
+COPY rootfs /
+
+ENTRYPOINT ["/init"]
