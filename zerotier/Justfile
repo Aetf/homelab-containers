@@ -1,0 +1,43 @@
+machine := "zerotier"
+image := machine + "-rootfs"
+local_tar := "build/rootfs.tar"
+# Canonical values live in ../versions.env, exported by the top-level Justfile;
+# defaults here only serve direct standalone invocation.
+# renovate: datasource=docker depName=alpine
+alpine_version := env_var_or_default("ALPINE_VERSION", "3.23.0")
+# renovate: datasource=github-releases depName=just-containers/s6-overlay extractVersion=^v(?<version>.+)$
+s6_version := env_var_or_default("S6_OVERLAY_VERSION", "3.2.2.0")
+# ZeroTierOne release pin (target-specific, not in versions.env), built from
+# source in the Containerfile — no musl package or binary exists upstream.
+# renovate: datasource=github-releases depName=zerotier/ZeroTierOne
+zerotier_version := "1.16.2"
+
+# Default to building the image
+default: build
+
+# Build the local rootfs tarball.
+# NOT `podman build --output type=tar`: with warm layer cache it silently
+# emits tars missing whole layers' content, incl. every symlink (bitten
+# 2026-08-18 on rpi-host). create+export flattens the actual image.
+build:
+    @echo "Building rootfs for {{machine}}..."
+    mkdir -p build
+    podman build --arch aarch64 -q \
+        --build-arg ALPINE_VERSION={{alpine_version}} \
+        --build-arg S6_OVERLAY_VERSION={{s6_version}} \
+        --build-arg ZEROTIER_VERSION={{zerotier_version}} \
+        --build-context shared=../shared \
+        -t {{image}} .
+    c=$(podman create --arch aarch64 {{image}} true) && \
+        podman export "$c" > {{local_tar}} && podman rm "$c" >/dev/null
+    @echo "Build complete: {{local_tar}}"
+
+# No deploy recipe: this member is net-new on the gateway and is only ever
+# deployed by the kluster physical stack, which pins the published rootfs
+# tarball by digest (Aetf/kluster-ops#68). It is host-networked and carries
+# the management overlay — the deployment session itself rides on it — so the
+# estate's recovery script owns its restart ordering, not an ssh push.
+
+# Clean up local artifacts
+clean:
+    rm -f {{local_tar}}
