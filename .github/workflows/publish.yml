@@ -1,27 +1,45 @@
-# Publish the nspawn estate's rootfs tarballs (caddy, adguard, zerotier) as
-# GitHub release assets, one immutable release per run of this workflow.
+# Publish the nspawn estate (caddy, adguard, zerotier) from one build, on two
+# channels, once per run of this workflow.
 #
-# Consumer: the kluster physical stack pins each estate member to a
-# url + sha256 pair (`gatewayRootfs`); its GwArtifact resource fetches the URL
-# with a plain HTTPS GET and verifies the digest before anything reaches the
-# device. The contract this workflow upholds:
+# Registry images at ghcr.io/<owner>/<repo>/<target> are the target form: a
+# consumer pins a member to a tag and a digest, which is the one artifact
+# identity renovate maintains natively end to end, and re-checking it costs a
+# registry request rather than a download. That is the shape the kluster
+# physical stack is moving its pins to (kluster
+# docs/framework/rfc-002-src-layout-and-the-gateway.md, "Version pins, and one
+# namespace for them").
 #
-#   - a URL, once published, never changes content: every run creates a fresh
-#     release tagged rootfs-<run_number> and assets are never re-uploaded;
+# Release assets — the same root filesystems as flat tarballs under an
+# immutable per-run tag — are the form that stack consumes today: a
+# `gatewayRootfs` url + sha256 pair per member, which its GwArtifact resource
+# fetches with a plain HTTPS GET and verifies before anything reaches the
+# device. This channel retires when that consumer switches to the registry
+# pins; until then every run ships both, from the same build.
+#
+# The contract both channels uphold:
+#
+#   - a published reference never changes content: a run number is used once,
+#     assets are never re-uploaded, and image tags are never moved;
 #   - the version is digit-bearing and monotonic (the run number), so a
-#     renovate custom manager on the kluster side can bump the pin;
+#     consumer's renovate can bump the pin: the docker data source for an
+#     image tag, a custom manager for a release URL;
+#   - the source commit travels with the artifact: the release notes name it,
+#     and every image carries it both as `org.opencontainers.image.revision`
+#     and as a `sha-<commit>` tag;
 #   - the sha256 of every asset is published three ways: a SHA256SUMS asset,
 #     the release notes, and the job summary (as a copy-paste `gatewayRootfs`
-#     snippet).
+#     snippet); image digests appear in the job summary beside it.
 #
-# All three targets build on every publish, changed or not: a release always
-# carries the complete estate, so one tag pins a coherent set. otbr and
-# rpi-host are not estate members and stay deploy-manual (`just deploy`).
+# All three targets build on every publish, changed or not: one run number
+# names the complete estate on both channels, so a set of pins taken from it
+# is coherent. otbr and rpi-host are not estate members and stay deploy-manual
+# (`just deploy`).
 #
-# The tarball is a flat root filesystem tree (podman create + export of the
-# built image — see the build recipes for why NOT `podman build --output`),
-# compressed with zstd. The estate targets are aarch64-only: the UDM-SE is the
-# only machine that runs them.
+# The image channel pushes the image the build recipe produced. The tarball is
+# that same image flattened (podman create + export — see the build recipes
+# for why NOT `podman build --output`) and compressed with zstd. The estate
+# targets are aarch64-only, the UDM-SE being the only machine that runs them,
+# so the images are single-architecture and no manifest list is involved.
 name: Publish
 
 on:
@@ -35,7 +53,8 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: write # release + assets
+  packages: write # ghcr.io push
 
 env:
   TARGETS: caddy adguard zerotier
@@ -104,6 +123,68 @@ jobs:
               echo "  $member:"
               echo "    url: $base/$asset"
               echo "    sha256: $sha"
+            done
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      # The registry channel runs last on purpose. The tarball release is what
+      # the estate is deployed from today, so nothing new stands between a
+      # green build and it; and since a re-run reuses the run number, the
+      # release step above fails on the already-published tag before anything
+      # here can move an image tag that a consumer may already have pinned.
+      - name: Log in to ghcr.io
+        env:
+          # Any name authenticates against ghcr.io once the token is valid;
+          # the owner is used because github.actor can be a bot account whose
+          # name is not a legal registry username.
+          REGISTRY_USER: ${{ github.repository_owner }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: printf '%s' "$REGISTRY_TOKEN" | podman login ghcr.io -u "$REGISTRY_USER" --password-stdin
+      - name: Push images to ghcr.io
+        run: |
+          # A repository path on ghcr.io must be lowercase; an owner name need
+          # not be.
+          repo=${GITHUB_REPOSITORY,,}
+          tag="${{ github.run_number }}"
+          # Empty build context: the derivation adds labels and nothing else,
+          # and the repository directory holds the built tarballs by now.
+          ctx=$(mktemp -d)
+          mkdir -p dist/digests
+          for target in $TARGETS; do
+            # A label-only derivation of the image `just build` already made:
+            # no rebuild, no extra filesystem layer, same digest content.
+            # `source` is what links the package to this repository on
+            # ghcr.io; `revision` is the commit the image was built from.
+            printf 'FROM localhost/%s-rootfs\n' "$target" |
+              podman build -q -t "$target-publish" -f - \
+                --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+                --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+                --label "org.opencontainers.image.version=$tag" \
+                "$ctx"
+            image="ghcr.io/$repo/$target"
+            # The run-number tag is the one a consumer pins and renovate
+            # bumps; the commit tag makes the same build addressable without
+            # inventing a version stream. Both name one manifest, so one
+            # digest covers them.
+            podman push --digestfile "dist/digests/$target" "$target-publish" "$image:$tag"
+            podman push "$target-publish" "$image:sha-$GITHUB_SHA"
+          done
+      - name: Registry pin snippet in job summary
+        run: |
+          repo=${GITHUB_REPOSITORY,,}
+          tag="${{ github.run_number }}"
+          member_image() {
+            case "$1" in
+              adguard-alice|adguard-bob) echo adguard ;;
+              *) echo "$1" ;;
+            esac
+          }
+          {
+            echo "Registry pins, \`ghcr.io/$repo/<target>\` at tag@digest:"
+            echo
+            echo '```yaml'
+            for member in caddy adguard-alice adguard-bob zerotier; do
+              image=$(member_image "$member")
+              echo "versions:rootfs-gateway-$member: $tag@$(cat "dist/digests/$image")"
             done
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
