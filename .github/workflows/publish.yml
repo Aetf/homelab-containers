@@ -19,7 +19,10 @@
 # The contract both channels uphold:
 #
 #   - a published reference never changes content: a run number is used once,
-#     assets are never re-uploaded, and image tags are never moved;
+#     assets are never re-uploaded, and an image tag already in the registry
+#     is never pushed over — these builds are not bit-reproducible (Alpine
+#     package versions and timestamps drift), so publishing one commit twice
+#     would otherwise change what its tag resolves to;
 #   - the version is digit-bearing and monotonic (the run number), so a
 #     consumer's renovate can bump the pin: the docker data source for an
 #     image tag, a custom manager for a release URL;
@@ -68,7 +71,7 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends just podman zstd
+          sudo apt-get install -y --no-install-recommends just podman zstd skopeo jq
       - name: Build rootfs tarballs
         run: |
           for target in $TARGETS; do
@@ -126,11 +129,14 @@ jobs:
             done
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      # The registry channel runs last on purpose. The tarball release is what
+      # The registry channel runs last on purpose: the tarball release is what
       # the estate is deployed from today, so nothing new stands between a
-      # green build and it; and since a re-run reuses the run number, the
-      # release step above fails on the already-published tag before anything
-      # here can move an image tag that a consumer may already have pinned.
+      # green build and it. It also puts the release's own uniqueness check
+      # first — a re-run reuses the run number and fails on the existing
+      # release tag — so recovering from a run that released and then failed
+      # to push means dispatching a fresh run on the same commit. That run
+      # takes a new run number and leaves the commit's existing image tag
+      # untouched (below), which is why repeating a publish is safe.
       - name: Log in to ghcr.io
         env:
           # Any name authenticates against ghcr.io once the token is valid;
@@ -138,8 +144,13 @@ jobs:
           # name is not a legal registry username.
           REGISTRY_USER: ${{ github.repository_owner }}
           REGISTRY_TOKEN: ${{ github.token }}
+          # podman writes the credentials here and skopeo reads them from
+          # here, instead of both guessing at the same default path.
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/registry-auth.json
         run: printf '%s' "$REGISTRY_TOKEN" | podman login ghcr.io -u "$REGISTRY_USER" --password-stdin
       - name: Push images to ghcr.io
+        env:
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/registry-auth.json
         run: |
           # A repository path on ghcr.io must be lowercase; an owner name need
           # not be.
@@ -150,8 +161,12 @@ jobs:
           ctx=$(mktemp -d)
           mkdir -p dist/digests
           for target in $TARGETS; do
-            # A label-only derivation of the image `just build` already made:
-            # no rebuild, no extra filesystem layer, same digest content.
+            # A label-only derivation of the image `just build` already made.
+            # It changes the image configuration and adds no filesystem layer,
+            # so the layers published are the ones that were built and this
+            # run's tarball asset is a flattening of the same content — the
+            # image's own digest of course differs from the base image's,
+            # since the configuration is part of it.
             # `source` is what links the package to this repository on
             # ghcr.io; `revision` is the commit the image was built from.
             printf 'FROM localhost/%s-rootfs\n' "$target" |
@@ -161,12 +176,33 @@ jobs:
                 --label "org.opencontainers.image.version=$tag" \
                 "$ctx"
             image="ghcr.io/$repo/$target"
+            # What actually keeps a tag from moving: a tag already in the
+            # registry is never pushed over. The run-number tag is new by
+            # construction, but the commit tag is not — dispatching this
+            # workflow twice on one commit rebuilds it, and the rebuild is not
+            # bit-identical. A repository with nothing in it yet cannot be
+            # listed, which reads the same as an empty tag list; so does any
+            # other listing failure, and then the push decides.
+            if ! tags=$(skopeo list-tags "docker://$image" 2>&1); then
+              echo "no tag list for $image ($tags); treating it as empty"
+              tags=
+            else
+              tags=$(jq -r '.Tags[]?' <<<"$tags")
+            fi
             # The run-number tag is the one a consumer pins and renovate
-            # bumps; the commit tag makes the same build addressable without
-            # inventing a version stream. Both name one manifest, so one
-            # digest covers them.
-            podman push --digestfile "dist/digests/$target" "$target-publish" "$image:$tag"
-            podman push "$target-publish" "$image:sha-$GITHUB_SHA"
+            # bumps; the commit tag makes that same build addressable without
+            # inventing a version stream. Both name one manifest.
+            for t in "$tag" "sha-$GITHUB_SHA"; do
+              if grep -qxF -- "$t" <<<"$tags"; then
+                echo "$image:$t is already published; leaving it as it is"
+              else
+                podman push "$target-publish" "$image:$t"
+              fi
+            done
+            # The pin is what the tag resolves to now, whether this run pushed
+            # it or found it.
+            skopeo inspect --format '{{.Digest}}' "docker://$image:$tag" \
+              > "dist/digests/$target"
           done
       - name: Registry pin snippet in job summary
         run: |

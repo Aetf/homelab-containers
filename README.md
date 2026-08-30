@@ -76,10 +76,12 @@ number:
   sha256 pair per member — and it retires once the registry pins land there.
 
 A published reference never changes content: a run number is used once, assets
-are never re-uploaded, image tags are never moved. `adguard` serves both
-resolver instances, so the estate's four members pin three artifacts between
-them. The consumer is the kluster physical stack, which delivers the bytes
-to the gateway itself; `zerotier` has no manual deploy recipe at all for that
+are never re-uploaded, and a tag already in the registry is never pushed over —
+builds here are not bit-reproducible, so publishing one commit twice must not
+change what its commit tag resolves to. `adguard` serves both resolver
+instances, so the estate's four members pin three artifacts between them. The
+consumer is the kluster physical stack, which delivers the bytes to the
+gateway itself; `zerotier` has no manual deploy recipe at all for that
 reason, while `caddy`/`adguard` keep theirs until that stack absorbs them.
 `otbr` and `rpi-host` are not estate members and stay deploy-manual.
 
