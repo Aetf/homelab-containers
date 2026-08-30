@@ -1,0 +1,40 @@
+#!/command/with-contenv ash
+# Real shell script, invoked BY the oneshot `up` file. s6-rc `up` files are
+# parsed by execlineb, NOT a shell — quoting/multi-command shell syntax there
+# silently misparses (a quoted token argument reaches `ip` verbatim and breaks
+# the whole boot).
+#
+# Static network identity, injected by the host's caddy.nspawn unit via
+# Environment= (PID1 env, readable here through with-contenv — the same
+# channel that already carries S6_KILL_GRACETIME):
+#   IPV4_CIDR    e.g. 10.0.5.2/24
+#   IPV4_GATEWAY e.g. 10.0.5.1
+#   IPV6_TOKEN   e.g. ::10.0.5.2   (SLAAC interface token)
+# Static beats DHCP here: this address is the one the estate's declaration
+# names, and the one the gateway's forwards and DNS records send traffic to,
+# so it has to be a property of the unit rather than of whatever a lease
+# happens to hand out. A MAC-keyed DHCP reservation cannot supply it either —
+# the UDM's UniFi controller never lists clients on the gateway's own bridge,
+# so reservations can't be managed for them, and nspawn derives the veth MAC
+# from the machine name anyway (a rename would silently orphan one). IPv6 was
+# already effectively static via the token; this makes v4 match. The caddy
+# service depends on this oneshot, so any failure here keeps the proxy from
+# listening on a wrong address — fail fast and loudly.
+
+fail() { echo "net-setup: $1" >&2; exit 1; }
+
+[ -n "${IPV4_CIDR}" ]    || fail "IPV4_CIDR is not set (expected from the .nspawn unit Environment=)"
+[ -n "${IPV4_GATEWAY}" ] || fail "IPV4_GATEWAY is not set (expected from the .nspawn unit Environment=)"
+[ -n "${IPV6_TOKEN}" ]   || fail "IPV6_TOKEN is not set (expected from the .nspawn unit Environment=)"
+
+ip link set lo up || fail "bringing up lo failed"
+
+# Set the SLAAC token BEFORE host0 comes up (RAs are only processed once up),
+# so the v6 address is always <prefix>::<token> and stays predictable across
+# prefix changes.
+ip token set "${IPV6_TOKEN}" dev host0 || fail "setting IPv6 token failed"
+
+# `replace` keeps this idempotent if the oneshot is ever re-run.
+ip addr replace "${IPV4_CIDR}" dev host0 || fail "assigning ${IPV4_CIDR} failed"
+ip link set host0 up || fail "bringing up host0 failed"
+ip route replace default via "${IPV4_GATEWAY}" || fail "installing default route failed"
