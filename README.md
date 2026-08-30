@@ -10,7 +10,7 @@ rootfs, an OCI image, and a flashable SD card:
 |---|---|---|---|
 | `caddy` | aarch64 | rootfs tar → validate-then-swap over ssh | systemd-nspawn container on a UniFi UDM-SE gateway |
 | `adguard` | aarch64 | rootfs tar → validate-then-swap (`--check-config`) + DNS health check with auto-rollback | systemd-nspawn container on the same gateway; whole-house DNS |
-| `zerotier` | aarch64 | rootfs tar → published release asset, digest-pinned by its consumer | host-networked systemd-nspawn container on the same gateway; runs `zerotier-one` (built from source — no musl package exists) terminating the ZeroTier overlay |
+| `zerotier` | aarch64 | published only — registry image + rootfs tar, digest-pinned by its consumer | host-networked systemd-nspawn container on the same gateway; runs `zerotier-one` (built from source — no musl package exists) terminating the ZeroTier overlay |
 | `otbr` | arm/v6 | OCI image → `podman save \| ssh podman load` | podman container on a Raspberry Pi 1 B Thread border router (upstream ot-br-posix doesn't ship armv6 images, so this builds from source on Alpine + s6-overlay) |
 | `rpi-host` | arm/v6 | flashable SD image (FAT boot + A/B ext4 root slots), assembled rootless | the Raspberry Pi itself (Alpine sys-mode, OpenRC) |
 
@@ -61,15 +61,29 @@ rootfs, an OCI image, and a flashable SD card:
 
 ## Published artifacts
 
-Every push to `main` also publishes the three gateway estate targets (`caddy`,
-`adguard`, `zerotier`) as flat rootfs tarballs — GitHub release assets under
-an immutable per-run tag (`rootfs-<run_number>`), with a `SHA256SUMS` asset
-and a copy-paste pin snippet in the job summary. A published URL never
-changes content. The consumer is the kluster physical stack, which pins each
-estate member to a url + sha256 pair and delivers the bytes to the gateway
-itself; `zerotier` has no manual deploy recipe at all for that reason, while
-`caddy`/`adguard` keep theirs until that stack absorbs them. `otbr` and
-`rpi-host` are not estate members and stay deploy-manual.
+Every push to `main` publishes the three gateway estate targets (`caddy`,
+`adguard`, `zerotier`) on two channels, from one build and under one run
+number:
+
+- **Registry images** at `ghcr.io/aetf/homelab-containers/<target>`, tagged
+  with the run number and with `sha-<commit>`, carrying the commit as
+  `org.opencontainers.image.revision`. A tag plus a digest is an identity a
+  consumer's renovate maintains by itself, so this is the channel the pins are
+  moving to.
+- **Flat rootfs tarballs** as GitHub release assets under an immutable per-run
+  tag (`rootfs-<run_number>`), with a `SHA256SUMS` asset and a copy-paste pin
+  snippet in the job summary. This is what the consumer reads today — a url +
+  sha256 pair per member — and it retires once the registry pins land there.
+
+A published reference never changes content: a run number is used once, assets
+are never re-uploaded, and a tag already in the registry is never pushed over —
+builds here are not bit-reproducible, so publishing one commit twice must not
+change what its commit tag resolves to. `adguard` serves both resolver
+instances, so the estate's four members pin three artifacts between them. The
+consumer is the kluster physical stack, which delivers the bytes to the
+gateway itself; `zerotier` has no manual deploy recipe at all for that
+reason, while `caddy`/`adguard` keep theirs until that stack absorbs them.
+`otbr` and `rpi-host` are not estate members and stay deploy-manual.
 
 ## Deployment config lives elsewhere
 
