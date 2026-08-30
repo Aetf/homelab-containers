@@ -19,7 +19,9 @@ RUN --mount=type=bind,from=shared,target=/shared \
 
 FROM docker.io/alpine:${ALPINE_VERSION}
 
-RUN apk add --no-cache ifupdown-ng socat openssh
+# iproute2-minimal: busybox ip has no `token` subcommand (see the net-setup
+# service, which statically configures host0 from .nspawn-injected env).
+RUN apk add --no-cache iproute2-minimal socat openssh
 
 RUN ssh-keygen -A
 
