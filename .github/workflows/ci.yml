@@ -34,7 +34,7 @@ jobs:
         run: echo 'targets=["adguard","caddy","zerotier","rpi-host"]' >> "$GITHUB_OUTPUT"
       - id: filter
         if: github.event_name != 'workflow_dispatch'
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             adguard:
