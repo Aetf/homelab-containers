@@ -1,16 +1,15 @@
 #!/bin/sh
 
-# Kill the readiness bridge ./run left behind. Skipping this leaks an ash and a
-# socat per restart whenever Caddy never signals READY=1.
+# Kill the readiness bridge ./run left behind. Skipping this leaks a socat per
+# restart whenever Caddy crash-loops.
 BRIDGE_PIDFILE="/var/run/caddy-notify-bridge.pid"
 if [ -r "$BRIDGE_PIDFILE" ]; then
     bridge_pid=$(cat "$BRIDGE_PIDFILE")
-    # The pidfile outlives a bridge that exited on its own, so confirm the pid is
-    # still a fork of this run script (s6 runs it as `ash ./run caddy`) before
-    # signalling it.
+    # The pidfile outlives a bridge that already died, so confirm the pid is still
+    # this run's socat before signalling it.
     cmdline=$(tr '\0' ' ' < "/proc/$bridge_pid/cmdline" 2>/dev/null)
     case "$cmdline" in
-        "ash ./run "*) kill "$bridge_pid" 2>/dev/null ;;
+        "socat "*caddy-notify*) kill "$bridge_pid" 2>/dev/null ;;
     esac
     rm -f "$BRIDGE_PIDFILE"
 fi
