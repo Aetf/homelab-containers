@@ -15,12 +15,14 @@ RUN --mount=type=bind,from=shared,target=/shared \
 # AdGuardHome official static binary (Go, works on musl; no apk package exists)
 # renovate: datasource=github-releases depName=AdguardTeam/AdGuardHome
 ARG ADGUARD_VERSION=v0.107.79
-RUN case "${TARGETARCH}${TARGETVARIANT:+/$TARGETVARIANT}" in \
-      "amd64")  AGH_ARCH="amd64" ;; \
-      "arm64")  AGH_ARCH="arm64" ;; \
-      "arm/v7") AGH_ARCH="armv7" ;; \
-      "arm/v6") AGH_ARCH="armv6" ;; \
-      *) echo "Unsupported architecture"; exit 1 ;; \
+# Some buildah versions report the arm64 variant, some leave it empty.
+RUN spec="${TARGETARCH}${TARGETVARIANT:+/$TARGETVARIANT}" \
+    && case "$spec" in \
+      "amd64")             AGH_ARCH="amd64" ;; \
+      "arm64"|"arm64/v8")  AGH_ARCH="arm64" ;; \
+      "arm/v7")            AGH_ARCH="armv7" ;; \
+      "arm/v6")            AGH_ARCH="armv6" ;; \
+      *) echo "Unsupported architecture: $spec" >&2; exit 1 ;; \
     esac \
     && mkdir /install-agh \
     && curl -L -f -s --retry 3 \
