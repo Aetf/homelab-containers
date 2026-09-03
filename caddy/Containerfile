@@ -1,4 +1,4 @@
-ARG ALPINE_VERSION=3.23.0
+ARG ALPINE_VERSION=3.24.1
 
 # caddy-l4 v0.1.2 requires caddy >= 2.11.4
 FROM docker.io/caddy:2.11.4-builder-alpine AS builder
