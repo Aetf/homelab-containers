@@ -14,6 +14,11 @@ export NOTIFY_SOCKET="$SOCK_NAME"
 PIPE="/var/run/caddy-socat.pipe"
 BRIDGE_PIDFILE="/var/run/caddy-notify-bridge.pid"
 
+# Leftovers from a bridge ./finish killed would make mkfifo and socat's bind
+# fail. Clearing them here, before the bridge starts, also makes the existence
+# of SOCK_NAME below mean "this run's socat has bound".
+rm -f "$PIPE" "$SOCK_NAME"
+
 (
     cleanup() {
         if [ -n "$SOCAT_PID" ]; then
@@ -24,12 +29,9 @@ BRIDGE_PIDFILE="/var/run/caddy-notify-bridge.pid"
     trap 'cleanup; exit 0' INT TERM
     trap cleanup EXIT
 
-    # Leftovers from a killed bridge would make mkfifo and socat's bind fail,
-    # which would silently cost readiness notification for the rest of the run.
-    rm -f "$PIPE"
     mkfifo "$PIPE"
 
-    socat -u UNIX-RECV:"$SOCK_NAME",unlink-early PIPE:"$PIPE",unlink-close &
+    socat -u UNIX-RECV:"$SOCK_NAME" PIPE:"$PIPE",unlink-close &
     SOCAT_PID=$!
 
     while read -r line; do
@@ -42,5 +44,20 @@ BRIDGE_PIDFILE="/var/run/caddy-notify-bridge.pid"
     done < "$PIPE"
 ) &
 echo $! > "$BRIDGE_PIDFILE"
+
+# Caddy reaches "serving initial configuration" about 10ms after the exec below,
+# normally before socat has bound, and an sd_notify datagram sent to an unbound
+# socket is simply lost: the service would then never be reported ready. Wait for
+# the socket before handing control to Caddy. The cap keeps a bridge that cannot
+# bind from holding Caddy hostage; an unnotified Caddy still serves.
+tries=0
+until [ -S "$SOCK_NAME" ]; do
+    tries=$((tries + 1))
+    if [ "$tries" -gt 100 ]; then
+        echo "caddy: readiness bridge never bound $SOCK_NAME; starting Caddy anyway" >&2
+        break
+    fi
+    sleep 0.05
+done
 
 exec /usr/bin/caddy run --config $XDG_CONFIG_HOME/caddy/Caddyfile --adapter caddyfile
