@@ -18,7 +18,8 @@ case "${PLATFORM_SPEC}" in
     "amd64")  S6_ARCH="x86_64"  ;;
     "arm/v7") S6_ARCH="arm"     ;;
     "arm/v6") S6_ARCH="armhf"   ;;
-    "arm64")  S6_ARCH="aarch64" ;;
+    # Some buildah versions report the arm64 variant, some leave it empty.
+    "arm64"|"arm64/v8") S6_ARCH="aarch64" ;;
     *) echo "Unsupported architecture: ${PLATFORM_SPEC}" >&2; exit 1 ;;
 esac
 
