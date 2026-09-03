@@ -2,54 +2,34 @@
 
 # Bridge Caddy's sd_notify readiness into s6's notification-fd (fd 3).
 #
-# The bridge runs in a background subshell, so it survives the exec below and is
-# reparented to s6-svscan once Caddy exits. Nothing in the subshell terminates on
-# its own when READY=1 never arrives (a Caddy that fails to start): it stays
-# blocked on the FIFO, and the EXIT trap never fires. s6 restarts the longrun, so
-# every restart used to leak one ash plus one socat for the lifetime of the
-# container. ./finish is what tears the bridge down, keyed off BRIDGE_PIDFILE.
+# Caddy sends RELOADING=1 and then READY=1 as bare datagrams with no trailing
+# newline, so a shell `read` loop never completes a line and never fires. socat
+# forks one short-lived shell per datagram instead: each gets the datagram on
+# stdin, terminates at its EOF, and echoes to fd 3 when the datagram is the ready
+# one. fd 3 comes from s6-supervise and is inherited through socat.
+#
+# socat outlives the exec below and is reparented to s6-svscan when Caddy exits;
+# ./finish kills it, keyed off BRIDGE_PIDFILE. Without that teardown a Caddy that
+# crash-loops leaks one socat per restart, without bound.
 
 SOCK_NAME="/var/run/caddy-notify"
 export NOTIFY_SOCKET="$SOCK_NAME"
-PIPE="/var/run/caddy-socat.pipe"
 BRIDGE_PIDFILE="/var/run/caddy-notify-bridge.pid"
 
-# Leftovers from a bridge ./finish killed would make mkfifo and socat's bind
-# fail. Clearing them here, before the bridge starts, also makes the existence
-# of SOCK_NAME below mean "this run's socat has bound".
-rm -f "$PIPE" "$SOCK_NAME"
+# A socket left behind by a bridge ./finish killed would make bind fail. Clearing
+# it here also makes its existence below mean "this run's socat has bound".
+rm -f "$SOCK_NAME"
 
-(
-    cleanup() {
-        if [ -n "$SOCAT_PID" ]; then
-            kill "$SOCAT_PID" 2>/dev/null
-        fi
-        rm -f "$PIPE"
-    }
-    trap 'cleanup; exit 0' INT TERM
-    trap cleanup EXIT
-
-    mkfifo "$PIPE"
-
-    socat -u UNIX-RECV:"$SOCK_NAME" PIPE:"$PIPE",unlink-close &
-    SOCAT_PID=$!
-
-    while read -r line; do
-        case "$line" in
-            *READY=1*)
-                echo "" >&3
-                break
-                ;;
-        esac
-    done < "$PIPE"
-) &
+# `; true` keeps a non-matching datagram (RELOADING=1, STOPPING=1) from being
+# logged by socat as a failed child.
+socat -u "UNIX-RECVFROM:$SOCK_NAME,fork" "SYSTEM:grep -q READY=1 && echo >&3; true" &
 echo $! > "$BRIDGE_PIDFILE"
 
 # Caddy reaches "serving initial configuration" about 10ms after the exec below,
-# normally before socat has bound, and an sd_notify datagram sent to an unbound
-# socket is simply lost: the service would then never be reported ready. Wait for
-# the socket before handing control to Caddy. The cap keeps a bridge that cannot
-# bind from holding Caddy hostage; an unnotified Caddy still serves.
+# normally before socat has bound, and a datagram sent to an unbound socket is
+# simply lost: the service would then never be reported ready. Wait for the socket
+# before handing control to Caddy. The cap keeps a bridge that cannot bind from
+# holding Caddy hostage; an unnotified Caddy still serves.
 tries=0
 until [ -S "$SOCK_NAME" ]; do
     tries=$((tries + 1))
