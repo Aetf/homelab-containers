@@ -1,0 +1,84 @@
+#!/command/with-contenv bash
+#
+# Reconciles OpenThread runtime settings that have neither a persistent form nor
+# a compile-time default, so they have to be re-applied after every agent start.
+#
+# Both settings below exist to demote the Google/Nest border routers that share
+# this Thread network. A border router publishes its OMR prefix and its ::/0
+# route into Network Data as a declaration; Thread has no reachability check on
+# either. A Nest that stays attached to the mesh while its infrastructure side
+# stops forwarding silently black-holes every device that picked it, and those
+# devices never re-select. Making this border router win both decisions puts
+# addressing and egress on the only one whose forwarding is observable.
+#
+# `br routeprf` is the preference of the ::/0 route this border router
+# publishes. Left alone it is derived from the device role: `med` for a router
+# or leader, so all border routers tie and devices spread across them.
+#
+# `br omrconfig custom` pins the network's OMR prefix, which every device uses
+# to form its routable address. Every border router runs the same
+# OmrPrefixManager::Evaluate(): it withdraws its own prefix unless that prefix
+# outranks the favored one already in Network Data, and a self-generated prefix
+# is hardcoded to preference `low`. Publishing at `high` therefore makes the
+# other border routers stand down on their own, and the mesh stops renumbering
+# whenever one of them flaps.
+#
+# The pinned prefix is this border router's own generated one, so nothing else
+# has to change. It is a random ULA (RoutingManager::LoadOrGenerateRandomBrUlaPrefix)
+# with no relation to the infrastructure link's addressing; naming it literally
+# here also makes it independent of the Settings blob in /data/thread surviving.
+#
+# This is a reconcile loop rather than a oneshot: s6 restarts a crashed
+# otbr-agent in place and does not re-run oneshots that depended on it, which
+# would leave both settings silently back at their defaults.
+
+set -u
+
+OT_THREAD_IF="${OT_THREAD_IF:-wpan0}"
+readonly OT_THREAD_IF
+
+readonly OMR_PREFIX="fdc6:e68e:5f2a:1::/64"
+readonly PREFERENCE=high
+readonly RECONCILE_INTERVAL=60
+
+# Desired state as `<read args>|<glob the reading must match>|<write args>`.
+# Globs rather than exact strings so that a change in how ot-ctl formats a
+# reading cannot turn into a re-apply every interval.
+readonly SETTINGS=(
+    "br routeprf|${PREFERENCE}|br routeprf ${PREFERENCE}"
+    "br omrconfig|custom*${OMR_PREFIX}*prf:${PREFERENCE}*|br omrconfig custom ${OMR_PREFIX} ${PREFERENCE}"
+)
+
+otctl() {
+    ot-ctl -I "${OT_THREAD_IF}" "$@"
+}
+
+# ot-ctl terminates lines with CRLF and appends a `Done` status line.
+otctl_value() {
+    otctl "$@" | head -n1 | tr -d '\r'
+}
+
+log() {
+    echo "otbr-config: $*"
+}
+
+# otbr-agent reports s6 readiness once its CLI and REST surfaces are up, which
+# happens before the border routing manager has attached and reached `running`.
+log "waiting for the border routing manager to start"
+until [ "$(otctl_value br state)" = running ]; do
+    sleep 2
+done
+
+while :; do
+    for setting in "${SETTINGS[@]}"; do
+        IFS='|' read -r read_args pattern write_args <<<"${setting}"
+
+        current=$(otctl_value ${read_args})
+        [[ ${current} == ${pattern} ]] && continue
+
+        log "'${read_args}' reads '${current}', applying '${write_args}'"
+        otctl ${write_args}
+    done
+
+    sleep "${RECONCILE_INTERVAL}"
+done
