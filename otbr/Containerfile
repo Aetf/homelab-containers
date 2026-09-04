@@ -72,5 +72,6 @@ RUN apk add bash uutils-coreutils ipset iptables \
 COPY --from=builder /work/install/ /
 
 COPY otbr-web-rootfs /
+COPY otbr-config-rootfs /
 
 ENTRYPOINT ["/init"]
