@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   changes:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       pull-requests: read
@@ -68,7 +68,7 @@ jobs:
         target: ${{ fromJSON(needs.changes.outputs.targets) }}
     # Native arm64 runners (free for public repos): adguard/caddy build
     # natively, rpi-host (armv6) goes through qemu-user-static binfmt.
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -87,7 +87,7 @@ jobs:
         run: just build ${{ matrix.target }}
 
   renovate-config:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - name: Validate renovate config
