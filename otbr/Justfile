@@ -30,6 +30,14 @@ deploy:
     set -euo pipefail
     GIT_COMMIT=$(git ls-remote https://github.com/{{GITHUB_REPO}}.git refs/heads/{{GIT_BRANCH}} | cut -f1)
     just _build "${GIT_COMMIT}"
+    just push "${GIT_COMMIT}"
+
+# Install an already-built otbr-armv6:<commit> on the device and start it.
+# Also used by ../rpi-host/deploy.sh to reinstall the pinned tag on a fresh slot.
+push commit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    GIT_COMMIT={{commit}}
     # Transfer once and re-point `latest` on the remote side. save|load
     # instead of image scp: podman's builtin ssh client doesn't read
     # ~/.ssh/config, so the `rpi` alias doesn't resolve for it.
