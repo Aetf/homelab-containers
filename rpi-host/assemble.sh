@@ -56,13 +56,16 @@ slot)
     # os_prefix applies to overlays only if <prefix>overlays/README exists
     [ -d boot/os/overlays ] && : >boot/os/overlays/README
     cp /work/bootfs/config.txt boot/
-    # rpi-slot appends rpislot=<slot>[:trial] when installing the slot
-    printf 'root=UUID=%s modules=sd-mod,usb-storage,ext4 rootfstype=ext4 panic=10 quiet\n' \
-        "$ROOT_UUID" >boot/cmdline.base
+    # The root is named by partition, not by this build's fs UUID: the same
+    # build in both slots would make a UUID ambiguous. rpi-slot (and the card
+    # mode below) prepends root=<slot's partition> and appends
+    # rpislot=<slot>[:trial]; fstab has no / entry for the same reason
+    # (OpenRC's root service remounts / rw without one).
+    echo 'modules=sd-mod,usb-storage,ext4 rootfstype=ext4 panic=10 quiet' >boot/cmdline.base
+    echo "$ROOT_UUID" >boot/root.uuid
 
-    echo "== generating fstab (root=$ROOT_UUID)"
+    echo "== generating fstab"
     cat >root/etc/fstab <<EOF
-UUID=$ROOT_UUID	/	ext4	rw,relatime 0 1
 LABEL=RPIBOOT	/boot	vfat	rw,relatime,fmask=0022,dmask=0022,codepage=437,iocharset=ascii,shortname=mixed,errors=remount-ro 0 2
 LABEL=rpidata	/data	ext4	rw,relatime 0 2
 /data/otbr	/var/lib/otbr	none	bind 0 0
@@ -76,7 +79,7 @@ EOF
 
     echo "== building ext4 root partition image"
     mke2fs -q -t ext4 -d root -U "$ROOT_UUID" -L rpiroot root.img "${ROOT_MB}M"
-    tar -C boot -cf slot-boot.tar fw os config.txt cmdline.base
+    tar -C boot -cf slot-boot.tar fw os config.txt cmdline.base root.uuid
 
     mv root.img ../rootpart.img
     mv slot-boot.tar ../
@@ -99,7 +102,7 @@ card)
     cp -r slot/fw/. slot/config.txt boot/
     echo "os_prefix=a/" >boot/slot.txt
     cp -r slot/os boot/a
-    echo "$(cat slot/cmdline.base) rpislot=a" >boot/a/cmdline.txt
+    echo "root=/dev/mmcblk0p5 $(cat slot/cmdline.base) rpislot=a" >boot/a/cmdline.txt
     mkfs.vfat -C -F 32 -n RPIBOOT boot.img $((BOOT_MB * 1024)) >/dev/null
     mcopy -i boot.img -s boot/* ::/
 
