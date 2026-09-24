@@ -38,6 +38,9 @@ EOF
 
 mkdir bootfs
 mv root/boot/* bootfs/
+# FAT has no symlinks, and mcopy follows a top-level one: the rootfs's
+# /boot/boot -> . would land as a full duplicate of the partition in ::/boot.
+find bootfs -type l -print -delete | sed 's/^/dropping symlink /'
 printf 'root=UUID=%s modules=sd-mod,usb-storage,ext4 quiet rootfstype=ext4\n' "$ROOT_UUID" > bootfs/cmdline.txt
 
 echo "== building FAT boot partition"
