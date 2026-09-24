@@ -12,25 +12,29 @@ rootfs, an OCI image, and a flashable SD card:
 | `adguard` | aarch64 | rootfs tar → validate-then-swap (`--check-config`) + DNS health check with auto-rollback | systemd-nspawn container on the same gateway; whole-house DNS |
 | `zerotier` | aarch64 | published only — registry image + rootfs tar, digest-pinned by its consumer | host-networked systemd-nspawn container on the same gateway; runs `zerotier-one` (built from source — no musl package exists) terminating the ZeroTier overlay |
 | `otbr` | arm/v6 | OCI image → `podman save \| ssh podman load` | podman container on a Raspberry Pi 1 B Thread border router (upstream ot-br-posix doesn't ship armv6 images, so this builds from source on Alpine + s6-overlay) |
-| `rpi-host` | arm/v6 | flashable SD image (FAT boot + A/B ext4 root slots), assembled rootless | the Raspberry Pi itself (Alpine sys-mode, OpenRC) |
+| `rpi-host` | arm/v6 | A/B slot (root + kernel files) for online updates, and a full SD card image for a first flash; assembled rootless | the Raspberry Pi itself (Alpine sys-mode, OpenRC) |
 
 ## Design notes
 
 - **Image vs state.** Images carry software only. Everything that makes a
   device *that* device — ssh host keys, DNS state, Thread network data,
-  tokens — lives outside the image (bind-mounted `/data` on the gateway,
-  dedicated dirs on the Pi) or is overlaid into the artifact at assembly
-  time from the live device, into the gitignored `build/`. **No secrets in
-  this repo or its history.**
+  tokens — lives outside the image, on a `/data` bind mount on the gateway
+  and a `/data` partition on the Pi. Only the Pi's first-flash card image
+  embeds it, from a backup of the live device's `/data` in the gitignored
+  `build/`. **No secrets in this repo or its history.**
 - **Deploys are validate-then-swap.** nspawn targets extract to `<name>.new`,
   validate the live config with the *new* binary inside a chroot, then
   stop/swap/start, keeping the previous rootfs at `<name>.old` for instant
   rollback. The DNS target additionally health-checks after start and
   auto-rolls-back, capping a bad image at ~35s of downtime.
-- **The Pi reflashes online.** The SD image carries two root partitions;
-  `just deploy rpi-host` writes the new root to the inactive slot over ssh,
-  re-syncs live state onto it, flips `cmdline.txt` (backup kept), reboots
-  and health-checks. Only the very first flash of a card touches hardware.
+- **The Pi updates online, A/B, with automatic fallback.** A slot is a root
+  partition plus its own kernel files (selected by the firmware's
+  `os_prefix`); device state lives on a separate `/data` partition, so slots
+  are stateless and build without the device. `just deploy rpi-host` stages
+  the spare slot over ssh and boots it once through the firmware's one-shot
+  boot partition (`reboot 2`): until the deploy health-checks and commits
+  it, any reset — panic, hardware watchdog, power loss — returns to the
+  committed slot. Only the first flash of a card touches hardware.
 - **Version pins in one place.** `versions.env` pins ALPINE_VERSION /
   S6_OVERLAY_VERSION for every target (the top-level Justfile exports them);
   app versions pin in each target's Justfile. Upgrades are a bump + a

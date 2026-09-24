@@ -1,75 +1,149 @@
 #!/bin/sh
-# Assemble a flashable SD image from build/rootfs.tar + build/state.tar.
-# Runs INSIDE a throwaway alpine container (see Justfile `image` recipe) so it
-# needs no host tools and no root/loop devices: ext4 via mke2fs -d, FAT via
-# mtools, partition table via sfdisk, all operating on plain files.
+# Assemble the rpi host's boot artifacts from build/rootfs.tar. Runs INSIDE a
+# throwaway alpine container (see the Justfile) so it needs no host tools and
+# no root/loop devices: ext4 via mke2fs -d, FAT via mtools, partition table
+# via sfdisk, all on plain files.
+#
+#   assemble.sh slot  one A/B slot - build/rootpart.img (+ rootpart.uuid) and
+#                     build/slot-boot.tar - everything `just deploy` installs.
+#                     Stateless: no device data goes into a slot.
+#   assemble.sh card  the full card image build/rpi-host.img for a first
+#                     flash, from the slot artifacts plus build/state.tar
+#                     (a backup of the device's /data).
+#
+# Card layout. MBR: the Pi 1 boot ROM and firmware read no GPT. The firmware
+# only reads the two FAT partitions, which must be primary; the Linux ones
+# live in the extended partition. Offsets are 4 MiB aligned (SD erase blocks).
+#   p1 RPIBOOT  FAT32  firmware, config.txt, slot.txt (committed slot), a/ b/
+#   p2 RPITRY   FAT32  one-shot trial boot, rewritten by every deploy
+#   p3          extended, to the end of the card
+#   p5 / p6     ext4   root of slot a / b
+#   p7 rpidata  ext4   /data; grown to the end of the card on first boot
+# Partition numbers are relied on by rootfs/usr/local/sbin/rpi-slot and
+# rootfs/etc/init.d/rpi-growdata.
 set -eu
 
-BOOT_MB=${BOOT_MB:-300}
-ROOT_MB=${ROOT_MB:-3400}
-OUT=build/rpi-host.img
+MODE=${1:?usage: assemble.sh slot|card}
+BOOT_MB=256
+TRY_MB=128
+ROOT_MB=1536
+DATA_MB=${DATA_MB:-1024}
 
-# coreutils: busybox dd lacks conv=sparse
-apk add --no-cache -q e2fsprogs dosfstools mtools sfdisk uuidgen tar coreutils
+case $MODE in
+slot)
+    apk add --no-cache -q e2fsprogs tar
+    rm -rf build/.slot; mkdir -p build/.slot/root build/.slot/boot/fw build/.slot/boot/os
+    cd build/.slot
 
-rm -rf build/.asm; mkdir -p build/.asm
-cd build/.asm
+    echo "== extracting rootfs"
+    tar -xpf ../rootfs.tar -C root --numeric-owner
+    ROOT_UUID=$(cat /proc/sys/kernel/random/uuid)
 
-echo "== extracting rootfs + state overlay"
-mkdir root
-tar -xpf ../rootfs.tar -C root --numeric-owner
-tar -xpf ../state.tar  -C root --numeric-owner
-chmod 600 root/etc/ssh/ssh_host_*_key root/etc/shadow
+    echo "== splitting /boot into firmware and OS files"
+    # Firmware (bootcode.bin, start*.elf, fixup*.dat) sits at a FAT
+    # partition's root; everything else the firmware loads is an OS file
+    # and goes into the slot directory. FAT has no symlinks (the rootfs
+    # carries /boot/boot -> .), and config.txt is ours (../../bootfs).
+    for f in root/boot/*; do
+        n=${f##*/}
+        if [ -L "$f" ]; then rm "$f"; continue; fi
+        case $n in
+        bootcode.bin | start*.elf | fixup*.dat) mv "$f" boot/fw/ ;;
+        config.txt | cmdline.txt | config-* | System.map-*) rm -rf "$f" ;;
+        *) mv "$f" boot/os/ ;;
+        esac
+    done
+    # os_prefix applies to overlays only if <prefix>overlays/README exists
+    [ -d boot/os/overlays ] && : >boot/os/overlays/README
+    cp /work/bootfs/config.txt boot/
+    # rpi-slot appends rpislot=<slot>[:trial] when installing the slot
+    printf 'root=UUID=%s modules=sd-mod,usb-storage,ext4 rootfstype=ext4 panic=10 quiet\n' \
+        "$ROOT_UUID" >boot/cmdline.base
 
-ROOT_UUID=$(uuidgen)
-# FAT volume id: 8 hex digits
-BOOT_VID=$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')
-BOOT_UUID_FSTAB=$(echo "$BOOT_VID" | tr 'a-f' 'A-F' | sed 's/^\(....\)/\1-/')
-
-echo "== generating fstab + cmdline.txt (root=$ROOT_UUID boot=$BOOT_UUID_FSTAB)"
-cat > root/etc/fstab <<EOF
+    echo "== generating fstab (root=$ROOT_UUID)"
+    cat >root/etc/fstab <<EOF
 UUID=$ROOT_UUID	/	ext4	rw,relatime 0 1
-UUID=$BOOT_UUID_FSTAB	/boot	vfat	rw,relatime,fmask=0022,dmask=0022,codepage=437,iocharset=ascii,shortname=mixed,errors=remount-ro 0 2
+LABEL=RPIBOOT	/boot	vfat	rw,relatime,fmask=0022,dmask=0022,codepage=437,iocharset=ascii,shortname=mixed,errors=remount-ro 0 2
+LABEL=rpidata	/data	ext4	rw,relatime 0 2
+/data/otbr	/var/lib/otbr	none	bind 0 0
+/data/hass-agent	/var/lib/hass-agent	none	bind 0 0
+/data/containers	/var/lib/containers	none	bind 0 0
 /dev/cdrom	/media/cdrom	iso9660	noauto,ro 0 0
 /dev/usbdisk	/media/usb	vfat	noauto	0 0
 tmpfs	/tmp	tmpfs	nosuid,nodev	0	0
 tmpfs	/var/log	tmpfs	nosuid,nodev	0	0
 EOF
 
-mkdir bootfs
-mv root/boot/* bootfs/
-# FAT has no symlinks, and mcopy follows a top-level one: the rootfs's
-# /boot/boot -> . would land as a full duplicate of the partition in ::/boot.
-find bootfs -type l -print -delete | sed 's/^/dropping symlink /'
-printf 'root=UUID=%s modules=sd-mod,usb-storage,ext4 quiet rootfstype=ext4\n' "$ROOT_UUID" > bootfs/cmdline.txt
+    echo "== building ext4 root partition image"
+    mke2fs -q -t ext4 -d root -U "$ROOT_UUID" -L rpiroot root.img "${ROOT_MB}M"
+    tar -C boot -cf slot-boot.tar fw os config.txt cmdline.base
 
-echo "== building FAT boot partition"
-mkfs.vfat -C -F 32 -n RPIBOOT -i "$BOOT_VID" boot.img $((BOOT_MB * 1024)) >/dev/null
-mcopy -i boot.img -s bootfs/* ::/
+    mv root.img ../rootpart.img
+    mv slot-boot.tar ../
+    printf '%s\n' "$ROOT_UUID" >../rootpart.uuid
+    cd ..; rm -rf .slot
+    echo "== done: rootpart.img + slot-boot.tar (root $ROOT_UUID)"
+    ls -lhs rootpart.img slot-boot.tar
+    ;;
 
-echo "== building ext4 root partition"
-mke2fs -q -t ext4 -d root -U "$ROOT_UUID" -L rpiroot root.img "${ROOT_MB}M"
+card)
+    apk add --no-cache -q e2fsprogs dosfstools mtools sfdisk tar coreutils
+    for f in rootpart.img rootpart.uuid slot-boot.tar state.tar; do
+        [ -s build/$f ] || { echo "ERROR: build/$f missing" >&2; exit 1; }
+    done
+    rm -rf build/.card; mkdir -p build/.card/boot build/.card/slot build/.card/data
+    cd build/.card
 
-echo "== assembling partitioned image (A/B root slots)"
-# p2 = root slot A (populated), p3 = root slot B (bare partition, no fs):
-# future deploys write the inactive slot over ssh and flip cmdline.txt,
-# so reflashing never needs physical access again after the first flash.
-truncate -s $((1 + BOOT_MB + ROOT_MB + ROOT_MB + 1))M img
-sfdisk -q img <<EOF
+    echo "== p1 RPIBOOT: firmware + slot a"
+    tar -xf ../slot-boot.tar -C slot
+    cp -r slot/fw/. slot/config.txt boot/
+    echo "os_prefix=a/" >boot/slot.txt
+    cp -r slot/os boot/a
+    echo "$(cat slot/cmdline.base) rpislot=a" >boot/a/cmdline.txt
+    mkfs.vfat -C -F 32 -n RPIBOOT boot.img $((BOOT_MB * 1024)) >/dev/null
+    mcopy -i boot.img -s boot/* ::/
+
+    echo "== p2 RPITRY: empty until the first deploy stages a trial"
+    mkfs.vfat -C -F 32 -n RPITRY try.img $((TRY_MB * 1024)) >/dev/null
+
+    echo "== p7 rpidata from state.tar"
+    mkdir -p data/ssh data/otbr data/hass-agent data/containers data/env data/identity
+    tar -xpf ../state.tar -C data --numeric-owner
+    mke2fs -q -t ext4 -d data -L rpidata data.img "${DATA_MB}M"
+
+    echo "== partition table"
+    # all in MiB; sfdisk wants sectors (x2048)
+    p1=4
+    p2=$((p1 + BOOT_MB))
+    ext=$((p2 + TRY_MB))
+    p5=$((ext + 4))
+    p6=$((p5 + ROOT_MB + 4))
+    p7=$((p6 + ROOT_MB + 4))
+    total=$((p7 + DATA_MB + 4))
+    truncate -s "${total}M" img
+    sfdisk -q img <<EOF
 label: dos
 unit: sectors
-start=2048, size=$((BOOT_MB * 2048)), type=c
-start=$((2048 + BOOT_MB * 2048)), size=$((ROOT_MB * 2048)), type=83
-start=$((2048 + (BOOT_MB + ROOT_MB) * 2048)), size=$((ROOT_MB * 2048)), type=83
+start=$((p1 * 2048)), size=$((BOOT_MB * 2048)), type=c
+start=$((p2 * 2048)), size=$((TRY_MB * 2048)), type=c
+start=$((ext * 2048)), size=$(((total - ext) * 2048)), type=5
+start=$((p5 * 2048)), size=$((ROOT_MB * 2048)), type=83
+start=$((p6 * 2048)), size=$((ROOT_MB * 2048)), type=83
+start=$((p7 * 2048)), size=$((DATA_MB * 2048)), type=83
 EOF
-dd if=boot.img of=img bs=1M seek=1 conv=notrunc,sparse status=none
-dd if=root.img of=img bs=1M seek=$((1 + BOOT_MB)) conv=notrunc,sparse status=none
+    for part in "boot.img $p1" "try.img $p2" "../rootpart.img $p5" "data.img $p7"; do
+        set -- $part
+        dd if="$1" of=img bs=1M seek="$2" conv=notrunc,sparse status=none
+    done
 
-mv img "../${OUT##*/}"
-# keep the bare root partition image + its UUID for the online A/B deploy
-mv root.img ../rootpart.img
-printf '%s\n' "$ROOT_UUID" > ../rootpart.uuid
-cd ..; rm -rf .asm
-echo "== done: $OUT (first flash: dd if=$OUT of=/dev/sdX bs=4M conv=fsync)"
-echo "==       online redeploy afterwards: just deploy (writes rootpart.img to the inactive slot)"
-ls -lhs "${OUT##*/}" rootpart.img
+    mv img ../rpi-host.img
+    cd ..; rm -rf .card
+    echo "== done: build/rpi-host.img, slot a committed (first flash: dd if=rpi-host.img of=/dev/sdX bs=4M conv=fsync)"
+    ls -lhs rpi-host.img
+    ;;
+
+*)
+    echo "usage: assemble.sh slot|card" >&2
+    exit 2
+    ;;
+esac

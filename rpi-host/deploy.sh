@@ -1,58 +1,134 @@
 #!/usr/bin/env bash
-# Online A/B redeploy of the rpi host (no physical SD access needed once the
-# card carries the A/B layout from a first physical flash of rpi-host.img):
-#   1. write build/rootpart.img to the INACTIVE root slot (unmounted -> safe)
-#   2. re-sync device identity/state onto it (the baked copy is minutes old)
-#   3. flip /boot/cmdline.txt to the new slot's UUID (backup kept in
-#      cmdline.txt.prev - manual rollback = restore it and reboot)
-#   4. reboot, wait for ssh, verify the new slot booted
-#   5. reinstall container images (the fresh slot has none): otbr via
-#      ../otbr's deploy, hass-agent pulls from ghcr by its own service
-# A failed boot needs physical access (flip cmdline back on any card reader);
-# the Thread mesh tolerates this BR being down meanwhile.
+# Online A/B update of the rpi host with the slot built by `just slot`
+# (mechanism and card layout: rootfs/usr/local/sbin/rpi-slot).
+#
+#   stage   write build/rootpart.img to the spare root partition and install
+#           build/slot-boot.tar as the spare slot's kernel files, plus a
+#           complete trial boot partition (RPITRY) for it
+#   trial   reboot once into RPITRY; wait for the device to come back
+#   verify  health-check the running slot (network, otbr, hass-agent)
+#   commit  make the trial slot permanent, reboot normally, verify again
+#   all     stage, trial, verify, commit - a failed verify reboots the device
+#           back to the committed slot and exits non-zero
+#
+# Until `commit`, every reset of the device - kernel panic (panic=10), hang
+# (hardware watchdog), plain reboot, power loss, the on-device trial
+# deadline - returns to the committed slot, so this script dying mid-way is
+# safe. Device state lives on /data and is shared by both slots; nothing is
+# copied between them.
 set -euo pipefail
+cd "$(dirname "$0")"
 
-uuid=$(cat build/rootpart.uuid)
-[ -s build/rootpart.img ] || { echo "run 'just image' first" >&2; exit 1; }
+SSH=(ssh -o ConnectTimeout=5 -o BatchMode=yes rpi)
+# This checkout's rpi-slot, pushed for each use so host and device agree on
+# the protocol even when the running slot carries an older copy.
+RS=/run/rpi-slot-deploy
+push_rs() { "${SSH[@]}" "cat > $RS && chmod +x $RS" < rootfs/usr/local/sbin/rpi-slot; }
+status() {
+    push_rs
+    eval "$("${SSH[@]}" "$RS status")"
+    echo "device: booted slot $booted (trial: $trial), committed slot $committed"
+}
+boot_id() { "${SSH[@]}" cat /proc/sys/kernel/random/boot_id 2>/dev/null; }
+other() { case $1 in a) echo b ;; b) echo a ;; esac; }
 
-cur=$(ssh rpi "sed -n 's/.*root=UUID=\([0-9a-f-]*\).*/\1/p' /proc/cmdline")
-p2=$(ssh rpi "blkid /dev/mmcblk0p2 | sed -n 's/.*UUID=\"\([0-9a-f-]*\)\".*/\1/p'")
-if [ "$cur" = "$p2" ]; then target=/dev/mmcblk0p3; else target=/dev/mmcblk0p2; fi
-ssh rpi "test -b $target" || { echo "no $target - card lacks the A/B layout" >&2; exit 1; }
-echo "active slot UUID=$cur; writing new root ($uuid) to inactive $target"
+# Wait for the device to finish a reboot, identified by a new boot_id.
+wait_reboot() {
+    local old=$1 id i
+    echo "waiting for the device to come back (usually 1-3 min)..."
+    for i in $(seq 1 120); do
+        if id=$(boot_id) && [ -n "$id" ] && [ "$id" != "$old" ]; then return 0; fi
+        sleep 5
+    done
+    echo "ERROR: device did not come back within 10 min" >&2
+    return 1
+}
 
-gzip -c build/rootpart.img | ssh rpi "gunzip -c | dd of=$target bs=1M conv=fsync 2>/dev/null"
+stage() {
+    [ -s build/rootpart.img ] && [ -s build/slot-boot.tar ] ||
+        { echo "ERROR: run 'just slot' first" >&2; exit 1; }
+    status
+    local target
+    target=$(other "$committed")
+    echo "writing root to slot $target (compressed stream; a few minutes on the Pi)..."
+    gzip -1 -c build/rootpart.img | "${SSH[@]}" "$RS write-root $target"
+    echo "installing slot $target's kernel files and the trial partition..."
+    "${SSH[@]}" "$RS stage $target" < build/slot-boot.tar
+}
 
-echo "re-syncing live state onto the new slot"
-ssh rpi "mount $target /mnt \
-    && cp -a /etc/ssh/ssh_host_* /mnt/etc/ssh/ \
-    && cp -a /etc/shadow /mnt/etc/ \
-    && rm -rf /mnt/var/lib/otbr /mnt/var/lib/hass-agent \
-    && cp -a /var/lib/otbr /var/lib/hass-agent /mnt/var/lib/ \
-    && cp -a /root/otbr/.env /mnt/root/otbr/.env \
-    && { cp -a /root/hass-agent/.env /mnt/root/hass-agent/.env 2>/dev/null || true; } \
-    && umount /mnt"
-
-echo "flipping cmdline.txt and rebooting"
-ssh rpi "cp /boot/cmdline.txt /boot/cmdline.txt.prev \
-    && sed -i 's/root=UUID=[0-9a-f-]*/root=UUID=$uuid/' /boot/cmdline.txt \
-    && (sleep 1; reboot) >/dev/null 2>&1 &" || true
-
-echo "waiting for the device to come back"
-ok=
-for i in $(seq 1 60); do
-    if booted=$(ssh -o ConnectTimeout=5 -o BatchMode=yes rpi \
-            "sed -n 's/.*root=UUID=\([0-9a-f-]*\).*/\1/p' /proc/cmdline" 2>/dev/null); then
-        if [ "$booted" = "$uuid" ]; then ok=1; echo "up on new slot (attempt $i)"; break
-        elif [ "$booted" = "$cur" ]; then continue  # still the old boot going down
-        else echo "ERROR: booted unexpected slot $booted" >&2; exit 1; fi
+trial() {
+    status
+    local target id
+    target=$(other "$committed")
+    id=$(boot_id)
+    echo "trial-booting slot $target..."
+    "${SSH[@]}" "$RS trial" || true   # the connection drops as the device reboots
+    wait_reboot "$id"
+    status
+    if [ "$booted" = "$committed" ]; then
+        echo "ERROR: trial boot of slot $target failed; the firmware fell back to slot $committed" >&2
+        exit 1
     fi
-done
-[ -n "$ok" ] || { echo "ERROR: device did not come back on the new slot; physical rollback: restore cmdline.txt.prev" >&2; exit 1; }
+    [ "$booted" = "$target" ] && [ "$trial" = yes ] ||
+        { echo "ERROR: unexpected boot state after trial" >&2; exit 1; }
+}
 
-echo "reinstalling otbr container image"
-just --justfile ../otbr/Justfile --working-directory ../otbr deploy
+# Healthy = otbr attached to the Thread network and hass-agent running.
+# otbr needs a minute or two after boot to (re)attach.
+verify() {
+    local i state=
+    echo "checking health: waiting for otbr to attach to the Thread network (up to 5 min)..."
+    for i in $(seq 1 30); do
+        state=$("${SSH[@]}" "podman exec otbr ot-ctl state 2>/dev/null | head -1" 2>/dev/null | tr -d '\r') || true
+        case $state in leader | router | child) break ;; esac
+        sleep 10
+    done
+    case $state in
+    leader | router | child) echo "otbr: $state" ;;
+    *) echo "UNHEALTHY: otbr state '${state:-unavailable}'" >&2; return 1 ;;
+    esac
+    "${SSH[@]}" "rc-service hass-agent status" | grep -q started ||
+        { echo "UNHEALTHY: hass-agent not started" >&2; return 1; }
+    echo "hass-agent: started"
+}
 
-echo "final health check"
-ssh rpi "podman exec otbr ot-ctl state"
-echo "deploy complete; previous root remains on the other slot (rollback: restore /boot/cmdline.txt.prev, reboot)"
+commit() {
+    status
+    [ "$trial" = yes ] || { echo "ERROR: not in a trial boot" >&2; exit 1; }
+    "${SSH[@]}" "$RS commit"
+    local id
+    id=$(boot_id)
+    echo "rebooting normally to confirm the committed slot boots on its own..."
+    "${SSH[@]}" reboot || true
+    wait_reboot "$id"
+    status
+    [ "$booted" = "$committed" ] && [ "$trial" = no ] ||
+        { echo "ERROR: committed slot did not boot" >&2; exit 1; }
+    verify
+}
+
+case ${1:-all} in
+status) status ;;
+stage) stage ;;
+trial) trial ;;
+verify) verify ;;
+commit) commit ;;
+all)
+    stage
+    trial
+    if ! verify; then
+        id=$(boot_id)
+        echo "rolling back: plain reboot returns to the committed slot..."
+        "${SSH[@]}" reboot || true
+        wait_reboot "$id"
+        status
+        exit 1
+    fi
+    commit
+    echo "deploy complete: slot $booted committed"
+    ;;
+*)
+    echo "usage: deploy.sh [status|stage|trial|verify|commit|all]" >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,159 @@
+#!/bin/sh
+# A/B slot management on the rpi host; rpi-host/deploy.sh drives it over ssh.
+#
+# Card layout (built by assemble.sh; partition numbers are fixed there):
+#   p1 RPIBOOT  FAT   firmware, config.txt, slot.txt (os_prefix=<committed>/), a/ b/
+#   p2 RPITRY   FAT   one-shot trial boot: firmware, config.txt, slot.txt, <slot>/
+#   p5 / p6     ext4  root of slot a / b
+#   p7 rpidata  ext4  /data
+# A slot is a root partition plus its directory of OS files (kernel,
+# initramfs, dtbs, overlays, cmdline.txt) on the FAT, selected by the
+# firmware through os_prefix. The firmware boots p1 - the committed slot -
+# unless the previous reboot passed a partition number (reboot syscall
+# RESTART2 "2", stored in PM_RSTS), which it honours for that one boot only:
+# any later reset (panic=10, hardware watchdog, plain reboot, power loss)
+# returns to the committed slot. That is the trial boot; `commit` makes it
+# permanent by rewriting p1's slot.txt.
+#
+# Every boot names itself on the kernel cmdline: rpislot=<a|b>[:trial].
+set -euo pipefail
+
+DISK=/dev/mmcblk0
+TRY_PART=${DISK}p2
+BOOT=/boot
+TRIAL_DEADLINE=${TRIAL_DEADLINE:-900}
+
+die() { echo "rpi-slot: $*" >&2; exit 1; }
+
+root_part() {
+    case $1 in a) echo ${DISK}p5 ;; b) echo ${DISK}p6 ;; *) die "no such slot: $1" ;; esac
+}
+other() {
+    case $1 in a) echo b ;; b) echo a ;; *) die "no such slot: $1" ;; esac
+}
+booted_tag() { tr ' ' '\n' </proc/cmdline | sed -n 's/^rpislot=//p'; }
+booted() { booted_tag | cut -d: -f1; }
+is_trial() { case $(booted_tag) in *:trial) return 0 ;; esac; return 1; }
+committed() { sed -n 's|^os_prefix=\([ab]\)/$|\1|p' $BOOT/slot.txt; }
+
+# The slot an update may overwrite: neither running nor committed.
+spare() {
+    is_trial && die "running a trial boot - commit it or reboot first"
+    [ "$(booted)" = "$(committed)" ] || die "booted slot $(booted) is not the committed one ($(committed))"
+    other "$(booted)"
+}
+check_spare() {
+    [ "$1" = "$(spare)" ] || die "slot $1 is not the spare slot ($(spare))"
+}
+
+try_mount() {
+    mkdir -p /run/rpi-slot/try
+    mount -t vfat -o "$1" $TRY_PART /run/rpi-slot/try
+}
+
+cmd=${1:-status}
+[ $# -gt 0 ] && shift
+case $cmd in
+status)
+    # key=value lines, eval'ed by deploy.sh
+    echo "booted=$(booted)"
+    if is_trial; then echo trial=yes; else echo trial=no; fi
+    echo "committed=$(committed)"
+    ;;
+is-trial)
+    is_trial
+    ;;
+write-root)
+    # stdin: gzip'ed root partition image
+    slot=${1:?slot}; check_spare "$slot"
+    part=$(root_part "$slot")
+    ! grep -q "^$part " /proc/mounts || die "$part is mounted"
+    gunzip -c | dd of="$part" bs=1M conv=fsync 2>/dev/null
+    ;;
+stage)
+    # stdin: slot-boot.tar from assemble.sh (fw/ os/ config.txt cmdline.base)
+    slot=${1:?slot}; check_spare "$slot"
+    src=/run/rpi-slot/stage
+    rm -rf $src; mkdir -p $src
+    tar -xf - -C $src
+    [ -s $src/os/vmlinuz-rpi ] && [ -s $src/os/initramfs-rpi ] && [ -s $src/cmdline.base ] ||
+        die "incomplete slot-boot.tar"
+    uuid=$(sed -n 's/.*root=UUID=\([0-9a-f-]*\).*/\1/p' $src/cmdline.base)
+    [ "$(findfs "UUID=$uuid" 2>/dev/null)" = "$(root_part "$slot")" ] ||
+        die "root of UUID $uuid is not on slot $slot's partition - write-root first"
+    base=$(cat $src/cmdline.base)
+    # Committed-boot copy on RPIBOOT; unreferenced until `commit`.
+    rm -rf $BOOT/$slot.new
+    cp -r $src/os $BOOT/$slot.new
+    echo "$base rpislot=$slot" >$BOOT/$slot.new/cmdline.txt
+    sync
+    rm -rf $BOOT/$slot
+    mv $BOOT/$slot.new $BOOT/$slot
+    # Trial copy: RPITRY is a complete boot partition of its own (the
+    # firmware loads start.elf and config.txt from it too).
+    try_mount rw
+    rm -rf /run/rpi-slot/try/*
+    cp -r $src/fw/. $src/config.txt /run/rpi-slot/try/
+    echo "os_prefix=$slot/" >/run/rpi-slot/try/slot.txt
+    cp -r $src/os /run/rpi-slot/try/$slot
+    echo "$base rpislot=$slot:trial" >/run/rpi-slot/try/$slot/cmdline.txt
+    sync
+    umount /run/rpi-slot/try
+    rm -rf $src
+    echo "slot $slot staged"
+    ;;
+trial)
+    slot=$(spare)
+    try_mount ro
+    staged=$(sed -n 's|^os_prefix=\([ab]\)/$|\1|p' /run/rpi-slot/try/slot.txt 2>/dev/null || true)
+    ok=
+    [ "$staged" = "$slot" ] && [ -s /run/rpi-slot/try/start.elf ] &&
+        [ -s /run/rpi-slot/try/$slot/vmlinuz-rpi ] && ok=1
+    umount /run/rpi-slot/try
+    [ -n "$ok" ] || die "RPITRY does not hold a staged slot $slot"
+    echo "trial-booting slot $slot"
+    # rpi-reboot-partition (shutdown runlevel) issues the actual reboot
+    echo 2 >/run/rpi-slot/reboot-partition
+    reboot
+    ;;
+commit)
+    is_trial || die "not a trial boot"
+    slot=$(booted)
+    [ -s $BOOT/$slot/vmlinuz-rpi ] && grep -q "rpislot=$slot\$" $BOOT/$slot/cmdline.txt ||
+        die "RPIBOOT lacks a complete $slot/ - stage again"
+    # Firmware lives at the partition root, shared by both slots; the trial
+    # just proved RPITRY's copy. bootcode.bin is always read from p1 by the
+    # boot ROM, so a new one takes effect only from the next boot on.
+    try_mount ro
+    for f in /run/rpi-slot/try/*; do
+        [ -f "$f" ] || continue
+        n=${f##*/}
+        case $n in
+        bootcode.bin | start*.elf | fixup*.dat)
+            cmp -s "$f" "$BOOT/$n" && continue
+            echo "updating firmware $n"
+            cp "$f" "$BOOT/$n.new" && sync && mv "$BOOT/$n.new" "$BOOT/$n"
+            ;;
+        esac
+    done
+    umount /run/rpi-slot/try
+    echo "os_prefix=$slot/" >$BOOT/slot.txt.new
+    sync
+    mv $BOOT/slot.txt.new $BOOT/slot.txt
+    sync
+    echo "slot $slot committed"
+    ;;
+deadline)
+    # Run by the rpi-slot service on a trial boot: a trial nobody commits
+    # (deploy.sh died, host unreachable) must not stay up indefinitely.
+    is_trial || exit 0
+    sleep "$TRIAL_DEADLINE"
+    if [ "$(committed)" != "$(booted)" ]; then
+        logger -t rpi-slot "trial of slot $(booted) not committed within ${TRIAL_DEADLINE}s; rebooting to slot $(committed)"
+        reboot
+    fi
+    ;;
+*)
+    die "usage: rpi-slot status|is-trial|write-root <slot>|stage <slot>|trial|commit|deadline"
+    ;;
+esac

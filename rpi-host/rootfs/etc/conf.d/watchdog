@@ -1,0 +1,5 @@
+# BCM2835 hardware watchdog (max timeout ~15s): a hung kernel or userspace
+# resets the board - which, during an A/B trial boot, also means falling
+# back to the committed slot.
+WATCHDOG_DEV="/dev/watchdog"
+WATCHDOG_OPTS="-T 15 -t 5"

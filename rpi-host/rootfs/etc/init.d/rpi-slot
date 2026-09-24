@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+# On a trial boot (see /usr/local/sbin/rpi-slot), reboot back to the
+# committed slot unless the trial is committed within the deadline.
+
+description="A/B trial boot deadline"
+pidfile="/run/rpi-slot-deadline.pid"
+
+start() {
+	if ! /usr/local/sbin/rpi-slot is-trial; then
+		einfo "Committed slot $(/usr/local/sbin/rpi-slot status | sed -n 's/^booted=//p')"
+		return 0
+	fi
+	ebegin "Trial boot: arming the commit deadline"
+	start-stop-daemon --start --background --make-pidfile --pidfile "$pidfile" \
+		--exec /usr/local/sbin/rpi-slot -- deadline
+	eend $?
+}
+
+stop() {
+	[ -f "$pidfile" ] || return 0
+	start-stop-daemon --stop --pidfile "$pidfile"
+	rm -f "$pidfile"
+}

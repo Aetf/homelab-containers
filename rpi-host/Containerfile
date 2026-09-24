@@ -1,5 +1,10 @@
 ARG ALPINE_VERSION=3.24.2
 
+FROM docker.io/alpine:${ALPINE_VERSION} AS reboot2
+RUN apk add --no-cache gcc musl-dev linux-headers
+COPY reboot2.c /src/
+RUN gcc -static -Os -Wall -o /rpi-reboot2 /src/reboot2.c
+
 FROM docker.io/alpine:${ALPINE_VERSION}
 
 # mkinitfs.conf must be in place BEFORE linux-rpi so the kernel post-install
@@ -8,10 +13,11 @@ COPY rootfs/etc/mkinitfs/mkinitfs.conf /etc/mkinitfs/mkinitfs.conf
 
 # Exact apk world of the live device (captured 2026-08-18), which this image
 # replaces. linux-firmware-none: Pi 1 B needs no firmware blobs (smsc95xx USB
-# ethernet), keeps the image small.
+# ethernet), keeps the image small. sfdisk, util-linux-misc (resizepart) and
+# e2fsprogs-extra (resize2fs): rpi-growdata.
 RUN apk add --no-cache \
         alpine-base busybox-mdev-openrc \
-        dosfstools e2fsprogs \
+        dosfstools e2fsprogs e2fsprogs-extra sfdisk util-linux-misc \
         git htop neovim tmux \
         iproute2 ipset iptables libcap \
         linux-firmware-none linux-rpi raspberrypi-bootloader \
@@ -21,25 +27,34 @@ RUN apk add --no-cache \
 
 # The otbr compose deployment files come from the otbr target - single source
 # (build with --build-context otbr=../otbr). The pinned OTBR_TAG (.env) is
-# state, injected at image-assembly time from the live device.
+# device state on /data, written by otbr's `just push`.
 COPY --from=otbr compose.yml otbr.env /root/otbr/
 
 COPY rootfs /
+COPY --from=reboot2 /rpi-reboot2 /usr/local/sbin/
+
+# /data (p7) carries the device state; fstab bind-mounts its service dirs
+# over these, and the compose .env files resolve into it.
+RUN mkdir -p /data /var/lib/otbr /var/lib/hass-agent \
+    && ln -s /data/env/otbr.env /root/otbr/.env \
+    && ln -s /data/env/hass-agent.env /root/hass-agent/.env
 
 # Runlevels: replicate the live device exactly (note: swclock not hwclock -
 # no RTC; no avahi - mDNS is done by OTBR itself, the live avahi symlink was
 # a stale leftover we deliberately drop).
-RUN chmod +x /etc/init.d/otbr /etc/init.d/hass-agent \
+RUN chmod +x /etc/init.d/otbr /etc/init.d/hass-agent /etc/init.d/rpi-* \
+        /usr/local/sbin/rpi-slot \
     && chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys \
-    && for s in bootmisc networking seedrng syslog modules hostname sysctl swclock; do \
+    && for s in bootmisc networking seedrng syslog modules hostname sysctl swclock \
+                rpi-data rpi-growdata; do \
          rc-update add "$s" boot; done \
-    && for s in dmesg mdev devfs hwdrivers; do rc-update add "$s" sysinit; done \
-    && for s in mount-ro savecache killprocs; do rc-update add "$s" shutdown; done \
-    && for s in crond cgroups ntpd sshd iptables ip6tables otbr hass-agent; do \
+    && for s in dmesg mdev devfs hwdrivers watchdog; do rc-update add "$s" sysinit; done \
+    && for s in mount-ro savecache killprocs rpi-reboot-partition; do \
+         rc-update add "$s" shutdown; done \
+    && for s in crond cgroups ntpd sshd iptables ip6tables otbr hass-agent rpi-slot; do \
          rc-update add "$s" default; done
 
 # NOT done here on purpose:
-# - no ssh-keygen -A: host keys are device state (assembly overlay); alpine's
-#   sshd init generates missing ones on a truly fresh device.
-# - no root password: /etc/shadow comes from the state overlay.
-# - no fstab/cmdline.txt: generated at assembly with the fresh fs UUIDs.
+# - no ssh host keys, no root password: device identity lives on /data and
+#   is applied at boot by rpi-data.
+# - no fstab/cmdline.txt: generated at assembly with the fresh root fs UUID.

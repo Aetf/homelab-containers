@@ -1,0 +1,28 @@
+#!/sbin/openrc-run
+# Device identity and state live on /data (p7), outside both A/B root slots.
+# fstab bind-mounts its service dirs; this fills in what is not a directory:
+# ssh host keys (generated on a device that has none yet) and the root
+# password hash. System accounts need no such handling - they come from
+# package install scripts and are part of every image build.
+
+description="Apply device identity from /data"
+
+depend() {
+	need localmount
+	before sshd
+}
+
+start() {
+	ebegin "Applying device identity from /data"
+	mkdir -p /data/ssh /data/env /data/identity
+	for t in rsa ecdsa ed25519; do
+		k=/data/ssh/ssh_host_${t}_key
+		[ -s "$k" ] || ssh-keygen -q -N "" -t "$t" -f "$k" ||
+			{ eend 1 "cannot create $k"; return 1; }
+	done
+	if [ -s /data/identity/root.hash ]; then
+		printf 'root:%s\n' "$(cat /data/identity/root.hash)" | chpasswd -e ||
+			{ eend 1 "cannot set the root password"; return 1; }
+	fi
+	eend 0
+}

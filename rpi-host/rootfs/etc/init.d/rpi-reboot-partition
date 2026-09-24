@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+# `rpi-slot trial` requests a one-shot boot of firmware partition N. Busybox
+# reboot cannot pass that argument, so this issues the reboot itself as the
+# last shutdown step (processes killed, filesystems read-only). Without a
+# request it does nothing and init reboots as usual.
+
+description="Reboot into a requested firmware boot partition"
+
+depend() {
+	after mount-ro
+}
+
+start() {
+	[ -s /run/rpi-slot/reboot-partition ] || return 0
+	local p
+	p=$(cat /run/rpi-slot/reboot-partition)
+	ebegin "Rebooting into boot partition $p"
+	/usr/local/sbin/rpi-reboot2 "$p"
+	# only reached if the syscall failed; init's plain reboot follows
+	eend 1
+}

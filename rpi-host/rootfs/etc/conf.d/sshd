@@ -1,0 +1,3 @@
+# Host keys live on /data (see sshd_config.d/10-data-hostkeys.conf) and are
+# created by the rpi-data service; don't generate unused ones in /etc/ssh.
+sshd_disable_keygen="yes"

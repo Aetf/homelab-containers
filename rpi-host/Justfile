@@ -1,16 +1,17 @@
-# rpi-host: bootable SD image for the RPi 1 B Thread border router host
-# (alpine armhf sys-mode, replicating the live device; see Containerfile).
+# rpi-host: the RPi 1 B Thread border router host (alpine armhf sys-mode,
+# see Containerfile) with A/B slots and a separate /data partition.
 #
-# `just image` produces build/rpi-host.img with an A/B root layout,
-# personalized with state fetched from the LIVE device (ssh host keys,
-# /var/lib/otbr, HA token, ...) - secrets end up only in the gitignored
-# build/ dir, never in git.
+# A slot (root partition + its kernel files) is stateless and built without
+# the device: `just deploy` stages it into the spare slot over ssh,
+# trial-boots it once and commits it only if it comes up healthy
+# (deploy.sh; layout and mechanism in rootfs/usr/local/sbin/rpi-slot).
+# Device identity and state (ssh host keys, root password hash, Thread
+# network, hass-agent registration, pinned OTBR tag, container storage)
+# live on /data and are never part of a slot.
 #
-# First flash is physical (dd to the SD card; also run `just deploy otbr`
-# from ../otbr afterwards - the image carries no container images).
-# Every flash after that is ONLINE: `just deploy` writes the new root to the
-# inactive slot over ssh, flips cmdline.txt, reboots, health-checks, and
-# reinstalls the otbr image (see deploy.sh).
+# `just image` builds a full card for a first flash or a card replacement:
+# slot a plus /data seeded from build/state.tar, a backup fetched from the
+# live device. Secrets exist only in the gitignored build/ dir.
 
 # renovate: datasource=docker depName=alpine
 alpine_version := env_var_or_default("ALPINE_VERSION", "3.24.2")
@@ -21,10 +22,12 @@ default: build
 # NOT `podman build --output type=tar`: with warm layer cache it silently
 # emits tars missing whole layers' content, incl. every symlink (bitten
 # 2026-08-18). create+export flattens the actual image and is reliable.
+# --network=host here and below: podman forwards the host's *_proxy env, and
+# a localhost proxy is only reachable from the host's network namespace.
 build:
     @echo "Building rootfs for rpi-host..."
     mkdir -p build
-    podman build --platform linux/arm/v6 -q \
+    podman build --platform linux/arm/v6 -q --network=host \
         --build-arg ALPINE_VERSION={{alpine_version}} \
         --build-context otbr=../otbr \
         -t rpi-host-rootfs .
@@ -32,20 +35,29 @@ build:
         podman export "$c" > build/rootfs.tar && podman rm "$c" >/dev/null
     @echo "Build complete: build/rootfs.tar"
 
-# 2. Pull device state from the live rpi (secrets -> gitignored build/)
+# 2. Assemble one A/B slot: build/rootpart.img + build/slot-boot.tar
+# (rootless, in a helper container)
+slot: build
+    podman run --rm --platform linux/amd64 --network=host -v "$PWD:/work" -w /work \
+        docker.io/alpine:{{alpine_version}} sh /work/assemble.sh slot
+
+# Back up the live device's /data to build/state.tar (reuses the existing
+# one when the device is unreachable)
 fetch-state:
     ./fetch-state.sh
 
-# 3. Assemble the flashable image (rootless, inside a helper container)
-# --network=host: podman forwards the host's *_proxy env into the container,
-# and a localhost proxy is only reachable from the host's network namespace.
-image: build fetch-state
+# Full card image for a first flash: build/rpi-host.img
+image: slot fetch-state
     podman run --rm --platform linux/amd64 --network=host -v "$PWD:/work" -w /work \
-        docker.io/alpine:{{alpine_version}} sh /work/assemble.sh
+        docker.io/alpine:{{alpine_version}} sh /work/assemble.sh card
 
-# 4. Online A/B redeploy (requires the card to already carry the A/B layout)
-deploy: image
-    ./deploy.sh
+# Online A/B update. Steps run separately with `just step <name>`.
+deploy: slot
+    ./deploy.sh all
+
+# One deploy step: stage | trial | verify | commit | status
+step name:
+    ./deploy.sh {{name}}
 
 clean:
     rm -rf build

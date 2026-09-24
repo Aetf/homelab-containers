@@ -1,0 +1,8 @@
+# RPi 1 B firmware config, identical on RPIBOOT (p1) and RPITRY (p2).
+# The OS files - kernel, initramfs, dtbs, overlays, cmdline.txt - come from
+# the slot directory that slot.txt names via os_prefix; see
+# rootfs/usr/local/sbin/rpi-slot for the A/B scheme.
+kernel=vmlinuz-rpi
+initramfs initramfs-rpi
+arm_64bit=0
+include slot.txt

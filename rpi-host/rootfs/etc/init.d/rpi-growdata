@@ -1,0 +1,28 @@
+#!/sbin/openrc-run
+# The card image carries a small /data (p7, last partition, inside the
+# extended p3); grow both to the end of whatever card it was written to.
+# Online: sfdisk rewrites the table without re-reading it, resizepart tells
+# the kernel p7's new size, resize2fs grows the mounted filesystem.
+
+description="Grow /data to the end of the card"
+
+depend() {
+	need localmount
+}
+
+start() {
+	local disk=mmcblk0 dsize start size free
+	dsize=$(cat /sys/block/$disk/size)
+	start=$(cat /sys/block/$disk/${disk}p7/start)
+	size=$(cat /sys/block/$disk/${disk}p7/size)
+	free=$((dsize - start - size))
+	# < 32 MiB left over: already grown
+	[ "$free" -gt 65536 ] || return 0
+	ebegin "Growing /data by $((free / 2048)) MiB"
+	echo ', +' | sfdisk -q --no-reread --no-tell-kernel -N 3 /dev/$disk &&
+		echo ', +' | sfdisk -q --no-reread --no-tell-kernel -N 7 /dev/$disk &&
+		size=$(sfdisk -d /dev/$disk | sed -n "s|^/dev/${disk}p7 : start= *[0-9]*, size= *\([0-9]*\),.*|\1|p") &&
+		resizepart /dev/$disk 7 "$size" &&
+		resize2fs /dev/${disk}p7 >/dev/null
+	eend $?
+}
