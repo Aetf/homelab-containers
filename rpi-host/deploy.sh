@@ -11,15 +11,23 @@
 #   all     stage, trial, verify, commit - a failed verify reboots the device
 #           back to the committed slot and exits non-zero
 #
-# Until `commit`, every reset of the device - kernel panic (panic=10), hang
-# (hardware watchdog), plain reboot, power loss, the on-device trial
-# deadline - returns to the committed slot, so this script dying mid-way is
+# Until `commit`, every reset of the device - kernel panic or hang (hardware
+# watchdog), plain reboot, power loss, the on-device trial deadline -
+# returns to the committed slot, so this script dying mid-way is
 # safe. Device state lives on /data and is shared by both slots; nothing is
 # copied between them.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-SSH=(ssh -o ConnectTimeout=5 -o BatchMode=yes rpi)
+# Address the device by the IP it has now: its DNS record comes from its
+# DHCP lease, which udhcpc releases on shutdown, so the name stops resolving
+# across every reboot (and resolvers cache that NXDOMAIN). HostKeyAlias keeps
+# host key checking on the name. RPI_ADDR overrides the lookup when the name
+# is already unresolvable (e.g. a resolver still caching that NXDOMAIN).
+host=$(ssh -G rpi 2>/dev/null | awk '$1 == "hostname" {print $2}')
+addr=${RPI_ADDR:-$(getent ahostsv4 "$host" | awk '{print $1; exit}' || true)}
+[ -n "$addr" ] || { echo "ERROR: cannot resolve $host; set RPI_ADDR" >&2; exit 1; }
+SSH=(ssh -o ConnectTimeout=5 -o BatchMode=yes -o HostName="$addr" -o HostKeyAlias="$host" rpi)
 # This checkout's rpi-slot, pushed for each use so host and device agree on
 # the protocol even when the running slot carries an older copy.
 RS=/run/rpi-slot-deploy
