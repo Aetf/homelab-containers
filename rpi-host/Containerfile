@@ -39,9 +39,12 @@ RUN mkdir -p /data /var/lib/otbr /var/lib/hass-agent \
     && ln -s /data/env/otbr.env /root/otbr/.env \
     && ln -s /data/env/hass-agent.env /root/hass-agent/.env
 
-# Runlevels: replicate the live device exactly (note: swclock not hwclock -
-# no RTC; no avahi - mDNS is done by OTBR itself, the live avahi symlink was
-# a stale leftover we deliberately drop).
+# Runlevels (note: swclock not hwclock - no RTC; no avahi - mDNS is done by
+# OTBR itself). No iptables/ip6tables services: the host has no firewall
+# policy of its own; every rule is created at runtime by otbr-agent
+# (OT_FORWARD_INGRESS + otbr-ingress-* ipsets). Those services would only
+# save otbr's transient rules and restore them at boot ahead of the ipsets
+# they reference, and flush otbr's chains when stopped.
 RUN chmod +x /etc/init.d/otbr /etc/init.d/hass-agent /etc/init.d/rpi-* \
         /usr/local/sbin/rpi-slot \
     && chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys \
@@ -51,7 +54,7 @@ RUN chmod +x /etc/init.d/otbr /etc/init.d/hass-agent /etc/init.d/rpi-* \
     && for s in dmesg mdev devfs hwdrivers watchdog; do rc-update add "$s" sysinit; done \
     && for s in mount-ro savecache killprocs rpi-reboot-partition; do \
          rc-update add "$s" shutdown; done \
-    && for s in crond cgroups ntpd sshd iptables ip6tables otbr hass-agent rpi-slot; do \
+    && for s in crond cgroups ntpd sshd otbr hass-agent rpi-slot; do \
          rc-update add "$s" default; done
 
 # NOT done here on purpose:
