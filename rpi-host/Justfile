@@ -37,8 +37,10 @@ fetch-state:
     ./fetch-state.sh
 
 # 3. Assemble the flashable image (rootless, inside a helper container)
+# --network=host: podman forwards the host's *_proxy env into the container,
+# and a localhost proxy is only reachable from the host's network namespace.
 image: build fetch-state
-    podman run --rm --platform linux/amd64 -v "$PWD:/work" -w /work \
+    podman run --rm --platform linux/amd64 --network=host -v "$PWD:/work" -w /work \
         docker.io/alpine:{{alpine_version}} sh /work/assemble.sh
 
 # 4. Online A/B redeploy (requires the card to already carry the A/B layout)
