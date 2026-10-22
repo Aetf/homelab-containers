@@ -14,7 +14,7 @@
 # live device. Secrets exist only in the gitignored build/ dir.
 
 # renovate: datasource=docker depName=alpine
-alpine_version := env_var_or_default("ALPINE_VERSION", "3.24.2")
+alpine_version := env_var_or_default("ALPINE_VERSION", "3.24.3")
 
 default: build
 
