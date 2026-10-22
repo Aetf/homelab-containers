@@ -1,4 +1,4 @@
-ARG ALPINE_VERSION=3.24.2
+ARG ALPINE_VERSION=3.24.3
 
 FROM docker.io/alpine:${ALPINE_VERSION} AS reboot2
 RUN apk add --no-cache gcc musl-dev linux-headers
