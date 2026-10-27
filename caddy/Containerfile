@@ -21,9 +21,7 @@ FROM docker.io/alpine:${ALPINE_VERSION}
 
 # iproute2-minimal: busybox ip has no `token` subcommand (see the net-setup
 # service, which statically configures host0 from .nspawn-injected env).
-RUN apk add --no-cache iproute2-minimal socat openssh
-
-RUN ssh-keygen -A
+RUN apk add --no-cache iproute2-minimal socat
 
 COPY --from=builder /install /
 # Also make s6 init in regular init location, so systemd-nspawn can find and

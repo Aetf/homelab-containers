@@ -95,9 +95,3 @@ This repo owns what is *inside* the images. Host-side deployment config
 (`.nspawn` units, boot-time restore scripts, drift checking, encrypted
 backups) is managed separately with the rest of my dotfiles; the split keeps
 this repo shareable and the device-recovery path self-contained there.
-
-## TODO
-
-- caddy: ssh host keys are baked at build (`ssh-keygen -A`) so they rotate
-  every rebuild → known_hosts churn; move generation to a first-boot s6
-  oneshot persisting into `/data/caddy`.
